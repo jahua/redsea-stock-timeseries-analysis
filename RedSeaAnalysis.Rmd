@@ -54,6 +54,7 @@ This research quantifies the financial market impact of the Red Sea shipping cri
 \vspace{0.25cm}
 
 \textbf{Key Findings:}
+
 \begin{itemize}
   \item \textbf{Volatility:} Shipping stocks experienced 75-120\% volatility increases during the crisis, statistically significant at the 95\% confidence level. GARCH models confirm volatility persistence doubled during the crisis period.
   
@@ -61,7 +62,7 @@ This research quantifies the financial market impact of the Red Sea shipping cri
   
   \item \textbf{Risk Metrics:} Daily Value-at-Risk (95\%) for shipping stocks worsened by an average of 63\%, with strong statistical evidence that this change was crisis-induced rather than random variation.
   
-  \item \textbf{Event Response:} Structural break tests confirm the November 19th crisis start date represents a statistically significant change point in shipping stock dynamics, with market reactions evolving from initially positive (anticipating higher rates) to negative (reflecting operational challenges).
+  \item \textbf{Event Response:} Multiple breakpoint detection methods identify significant structural changes in shipping stock dynamics around the crisis period, with market reactions evolving from initially positive (anticipating higher rates) to negative (reflecting operational challenges).
   
   \item \textbf{Economic Impact:} Estimated \$2.5-3 billion in annual additional shipping costs, 8-day average trip extensions, and 30\% increased fuel consumption due to Cape of Good Hope rerouting.
 \end{itemize}
