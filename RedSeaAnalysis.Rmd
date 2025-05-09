@@ -1863,7 +1863,7 @@ change_heatmap <- ggplot(cor_changes_long, aes(x = Var1, y = Var2, fill = value,
 
 print(change_heatmap)
 
-# Display correlation change summary statistics
+# Display summary statistics for correlation changes
 formatted_kable(cor_change$summary, "Correlation Change Summary Statistics", digits = 4)
 
 # Calculate and display the most significant correlation changes
@@ -1975,52 +1975,184 @@ if ("SPY_returns" %in% colnames(data$returns)) {
 # Value at Risk Analysis
 
 ```{r var-analysis}
-# Calculate VaR
+# Calculate VaR with improved methodology
 var_results <- compare_var_periods(data$returns, 
                                  c(data$shipping_cols, data$market_cols), 
                                  data$crisis_start)
 
 # Display VaR results
-kable(var_results, caption = "Value at Risk Analysis",
-      digits = 2, booktabs = TRUE)
+formatted_kable(var_results, "Value at Risk Analysis", digits = 2)
 
-# Plot VaR comparison
+# Plot VaR comparison with ECDF visualization
 var_plot <- plot_var_comparison(var_results)
 print(var_plot)
 
+# Create ECDF plots for pre-crisis and crisis periods for first shipping stock
+if (length(data$shipping_cols) > 0) {
+  asset <- data$shipping_cols[1]
+  pre_crisis_returns <- data$returns[index(data$returns) < as.Date(data$crisis_start), asset]
+  crisis_returns <- data$returns[index(data$returns) >= as.Date(data$crisis_start), asset]
+  
+  # Calculate VaR at 95% confidence
+  alpha <- 0.05
+  
+  # Pre-crisis ECDF
+  pre_returns_sorted <- sort(as.numeric(pre_crisis_returns), decreasing = FALSE)
+  pre_ecdf <- 1:length(pre_returns_sorted) / length(pre_returns_sorted)
+  pre_var <- quantile(pre_returns_sorted, probs = alpha) * 100
+  
+  # Crisis ECDF
+  crisis_returns_sorted <- sort(as.numeric(crisis_returns), decreasing = FALSE)
+  crisis_ecdf <- 1:length(crisis_returns_sorted) / length(crisis_returns_sorted)
+  crisis_var <- quantile(crisis_returns_sorted, probs = alpha) * 100
+  
+  # Create ECDF plots
+  par(mfrow = c(1, 2))
+  plot(x = pre_returns_sorted * 100, y = pre_ecdf, 
+       xlab = "Returns (%)", ylab = "ECDF", 
+       main = paste("Pre-Crisis ECDF for", asset), 
+       type = "l", col = "blue")
+  abline(v = pre_var, col = "red")
+  text(x = pre_var, y = 0.5, labels = paste("VaR:", round(pre_var, 2), "%"), pos = 4)
+  
+  plot(x = crisis_returns_sorted * 100, y = crisis_ecdf, 
+       xlab = "Returns (%)", ylab = "ECDF", 
+       main = paste("Crisis ECDF for", asset), 
+       type = "l", col = "darkred")
+  abline(v = crisis_var, col = "red")
+  text(x = crisis_var, y = 0.5, labels = paste("VaR:", round(crisis_var, 2), "%"), pos = 4)
+  par(mfrow = c(1, 1))
+}
+
 # Analyze VaR changes
 var_changes <- analyze_var_changes(var_results)
-kable(var_changes$summary, caption = "VaR Changes Analysis",
-      digits = 2, booktabs = TRUE)
+formatted_kable(var_changes$summary, "VaR Changes Analysis", digits = 2)
 ```
 
-# Forecasting
+# Forecasting and Granger Causality Analysis
 
-```{r forecasting}
+```{r forecasting, warning=FALSE}
 # Prepare VAR data
 if (length(data$shipping_cols) > 0 && length(data$market_cols) > 0) {
-  # Select columns for VAR
-  var_cols <- c(data$shipping_cols[1], data$market_cols[1])
+  # Select columns for VAR - use more assets for richer analysis
+  var_cols <- c(data$shipping_cols, data$market_cols[1])
   var_data <- data$returns[, var_cols]
   
-  # Run VAR analysis
-  var_results <- run_var_analysis(var_data)
+  # Test each series for stationarity to confirm VAR appropriateness
+  stationarity_results <- sapply(var_cols, function(col) {
+    test_result <- adf.test(var_data[, col])
+    c(ADF_Statistic = test_result$statistic, 
+      P_Value = test_result$p.value,
+      Stationary = test_result$p.value < 0.05)
+  })
+  formatted_kable(as.data.frame(t(stationarity_results)), 
+                "Stationarity Tests for VAR Input Series", digits = 4)
   
-  # Generate forecasts
-  forecasts <- generate_var_forecasts(var_results$model)
-  print(forecasts$plots)
+  # Run enhanced VAR analysis with optimal lag selection
+  var_results <- tryCatch({
+    # Select optimal lags with multiple information criteria
+    lag_selection <- vars::VARselect(var_data, lag.max = 10, type = "const")
+    formatted_kable(as.data.frame(lag_selection$criteria), 
+                  "VAR Lag Selection Criteria", digits = 4)
+    
+    # Use AIC as primary criterion for lag selection
+    optimal_lag <- lag_selection$selection["AIC(n)"]
+    
+    # Fit VAR model with optimal lag
+    vars::VAR(var_data, p = optimal_lag, type = "const")
+  }, error = function(e) {
+    # If error occurs, fall back to simpler model
+    warning("Error in VAR estimation with optimal lags: ", e$message, 
+           ". Falling back to p=1 model.")
+    vars::VAR(var_data, p = 1, type = "const")
+  })
   
-  # ARIMA forecasts for first shipping stock
-  if (length(names(shipping_data)) > 0) {
-    ticker <- names(shipping_data)[1]
-    arima_forecast <- forecast_with_arima(data$prices[, ticker], ticker)
-    print(arima_forecast$plot)
+  # Calculate and visualize Granger causality matrix
+  granger_matrix <- matrix(NA, length(var_cols), length(var_cols))
+  rownames(granger_matrix) <- var_cols
+  colnames(granger_matrix) <- var_cols
+  
+  # Fill Granger causality matrix
+  for (i in var_cols) {
+    for (j in var_cols) {
+      if (i != j) {
+        # Test if column i Granger-causes column j
+        test <- tryCatch({
+          gc_test <- vars::causality(var_results, cause = i)$Granger
+          gc_test$p.value < 0.05
+        }, error = function(e) {
+          NA
+        })
+        granger_matrix[i, j] <- test
+      }
+    }
   }
   
-  # Validate forecasts
-  error_metrics <- validate_forecasts(var_data, var_results$model)
-  kable(error_metrics, caption = "Forecast Error Metrics",
-        digits = 4, booktabs = TRUE)
+  # Display Granger causality results
+  granger_df <- as.data.frame(granger_matrix)
+  granger_df$From <- rownames(granger_df)
+  granger_df_long <- reshape2::melt(granger_df, id.vars = "From", 
+                                  variable.name = "To", 
+                                  value.name = "Granger_Causes")
+  granger_df_long <- granger_df_long[!is.na(granger_df_long$Granger_Causes), ]
+  
+  if(nrow(granger_df_long) > 0) {
+    formatted_kable(granger_df_long, "Granger Causality Relationships (at 5% significance)")
+    
+    # Create heatmap of Granger causality
+    granger_heatmap <- ggplot(granger_df_long, aes(x = From, y = To, fill = Granger_Causes)) +
+      geom_tile(color = "white") +
+      scale_fill_manual(values = c("FALSE" = "lightblue", "TRUE" = "darkred")) +
+      labs(title = "Granger Causality Relationships",
+           subtitle = "Dark red indicates significant causality at 5% level",
+           x = "Causing Variable", y = "Affected Variable") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    print(granger_heatmap)
+  }
+  
+  # Generate forecasts
+  var_forecasts <- predict(var_results, n.ahead = 20)
+  
+  # Create improved forecast plots
+  plots <- list()
+  forecast_data <- data.frame()
+  
+  for (series in names(var_forecasts$fcst)) {
+    # Extract forecast data for this series
+    fcst_data <- var_forecasts$fcst[[series]]
+    
+    # Convert to data frame for ggplot
+    df <- data.frame(
+      h = 1:20,
+      forecast = fcst_data[, 1],
+      lower_ci = fcst_data[, 2],
+      upper_ci = fcst_data[, 3],
+      series = series
+    )
+    
+    forecast_data <- rbind(forecast_data, df)
+  }
+  
+  # Create multi-series forecast plot
+  forecast_plot <- ggplot(forecast_data, aes(x = h, y = forecast, color = series)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, fill = series), alpha = 0.2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+    facet_wrap(~series, scales = "free_y") +
+    labs(title = "VAR Forecasts for Returns",
+         subtitle = "20-Day Horizon with 95% Confidence Intervals",
+         x = "Horizon (Days)",
+         y = "Forecasted Returns") +
+    theme_report() +
+    theme(legend.position = "none")
+  
+  print(forecast_plot)
+  
+  # Validate forecasts with back-testing
+  error_metrics <- validate_forecasts(var_data, var_results)
+  formatted_kable(error_metrics, "Forecast Error Metrics", digits = 4)
 }
 ```
 
@@ -2203,65 +2335,205 @@ if (!requireNamespace("rugarch", quietly = TRUE)) {
   # Load the library
   library(rugarch)
   
-  # Run GARCH analysis on shipping stocks
+  # Run enhanced GARCH analysis on shipping stocks
   garch_models <- list()
   garch_vols <- list()
   
-  # Analyze selected assets
-  assets_to_analyze <- c(data$shipping_cols[1], data$market_cols[1]) # First shipping stock and market index
+  # Analyze all shipping stocks and main market index
+  assets_to_analyze <- c(data$shipping_cols, data$market_cols[1]) 
+  
+  # Summary table for GARCH results
+  garch_summary <- data.frame(
+    Asset = character(),
+    Model = character(),
+    Mean_Equation = character(),
+    Omega = numeric(),
+    Alpha = numeric(),
+    Beta = numeric(),
+    Persistence = numeric(),
+    AIC = numeric(),
+    stringsAsFactors = FALSE
+  )
   
   for (asset in assets_to_analyze) {
     if (asset %in% colnames(data$returns)) {
-      # Run GARCH model
-      garch_result <- run_garch_analysis(data$returns[, asset], asset)
-      garch_models[[asset]] <- garch_result
+      cat("\n---------------------------------------------\n")
+      cat("GARCH Analysis for", asset, "\n")
+      cat("---------------------------------------------\n")
       
-      # Extract volatility
-      if (!is.null(garch_result$model)) {
+      # Extract return series
+      returns_vector <- as.numeric(data$returns[, asset])
+      returns_vector <- returns_vector[!is.na(returns_vector)]
+      
+      # Test different GARCH specifications to find best model
+      best_aic <- Inf
+      best_spec <- NULL
+      
+      # Loop through different specifications
+      for (dist in c("norm", "std")) {
+        for (garch_order in list(c(1,1), c(1,2), c(2,1))) {
+          for (arma_order in list(c(0,0), c(1,0), c(0,1), c(1,1))) {
+            # Create specification
+            spec <- ugarchspec(
+              variance.model = list(model = "sGARCH", garchOrder = garch_order),
+              mean.model = list(armaOrder = arma_order, include.mean = TRUE),
+              distribution.model = dist
+            )
+            
+            # Fit model with try-catch to handle errors
+            fit <- tryCatch({
+              ugarchfit(spec, returns_vector)
+            }, error = function(e) {
+              NULL
+            })
+            
+            # Check if fit succeeded and compare AIC
+            if (!is.null(fit) && !is.null(fit@fit$ics)) {
+              if (fit@fit$ics["Akaike"] < best_aic) {
+                best_aic <- fit@fit$ics["Akaike"]
+                best_spec <- spec
+                best_fit <- fit
+              }
+            }
+          }
+        }
+      }
+      
+      # Use best model if found
+      if (!is.null(best_spec)) {
+        cat("Best model found for", asset, "with AIC =", best_aic, "\n")
+        garch_result <- list(model = best_fit, asset = asset, spec = best_spec)
+        garch_models[[asset]] <- garch_result
+        
+        # Extract volatility
         vol <- extract_garch_volatility(garch_result, data$returns[, asset])
         garch_vols[[asset]] <- vol
         
         # Display GARCH parameters
-        cat("GARCH Model Parameters for", asset, ":\n")
-        print(rugarch::coef(garch_result$model))
+        model_coefs <- coef(best_fit)
+        cat("GARCH Parameters:\n")
+        print(model_coefs)
+        
+        # Get model properties
+        garch_order <- best_spec@model$modelinc[["garchOrder"]]
+        arma_order <- best_spec@model$modelinc[["armaOrder"]]
+        dist_model <- best_spec@model$modeldesc$distribution
+        
+        # Calculate persistence
+        alpha_indices <- grep("alpha", names(model_coefs))
+        beta_indices <- grep("beta", names(model_coefs))
+        
+        if (length(alpha_indices) > 0 && length(beta_indices) > 0) {
+          persistence <- sum(model_coefs[alpha_indices]) + sum(model_coefs[beta_indices])
+          
+          # Add to summary
+          garch_summary <- rbind(garch_summary, data.frame(
+            Asset = asset,
+            Model = paste0("GARCH(", garch_order[1], ",", garch_order[2], ")"),
+            Mean_Equation = paste0("ARMA(", arma_order[1], ",", arma_order[2], ")"),
+            Omega = model_coefs["omega"],
+            Alpha = sum(model_coefs[alpha_indices]),
+            Beta = sum(model_coefs[beta_indices]),
+            Persistence = persistence,
+            AIC = best_aic,
+            Distribution = dist_model,
+            Half_Life = log(0.5)/log(persistence),
+            stringsAsFactors = FALSE
+          ))
+        }
         
         # Plot model diagnostics
-        plot(garch_result$model, which = 2) # Conditional SD plot
-        plot(garch_result$model, which = 8) # News Impact Curve
+        par(mfrow = c(2, 2))
+        plot(best_fit, which = 1) # Standardized Residuals
+        plot(best_fit, which = 3) # Normal Q-Q Plot
+        plot(best_fit, which = 2) # Conditional Standard Deviation
+        plot(best_fit, which = 8) # News Impact Curve
+        par(mfrow = c(1, 1))
+      } else {
+        cat("Failed to fit GARCH model for", asset, "\n")
       }
     }
   }
   
-  # Plot conditional volatilities
+  # Split volatilities into pre-crisis and crisis periods
   if (length(garch_vols) > 0) {
+    # Display GARCH summary table
+    if (nrow(garch_summary) > 0) {
+      formatted_kable(garch_summary, "GARCH Model Summary", digits = 4)
+    }
+    
+    # Improved volatility visualization with crisis period highlighted
     garch_vol_plot <- plot_garch_volatility(garch_vols, data$crisis_start) +
-      theme_report()
+      theme_report() +
+      labs(subtitle = "Periods of high volatility indicate market stress",
+           caption = "Red vertical line marks the start of the Red Sea crisis")
     print(garch_vol_plot)
     
-    # Compare pre/post-crisis volatility persistence
-    persistence_results <- data.frame(
+    # Compare pre/post-crisis volatility levels
+    volatility_comparison <- data.frame(
       Asset = character(),
-      Pre_Crisis_Persistence = numeric(),
-      Crisis_Persistence = numeric(),
-      Persistence_Change = numeric(),
+      Pre_Crisis_Mean_Vol = numeric(),
+      Crisis_Mean_Vol = numeric(),
+      Vol_Change_Pct = numeric(),
+      p_value = numeric(),
+      Significant = logical(),
       stringsAsFactors = FALSE
     )
     
-    for (asset in names(garch_models)) {
-      if (!is.null(garch_models[[asset]]$model)) {
-        model_coef <- rugarch::coef(garch_models[[asset]]$model)
-        persistence <- sum(model_coef[grepl("alpha|beta", names(model_coef))])
+    for (asset in names(garch_vols)) {
+      vols <- garch_vols[[asset]]
+      
+      # Split by crisis date
+      pre_crisis_vols <- vols[index(vols) < as.Date(data$crisis_start)]
+      crisis_vols <- vols[index(vols) >= as.Date(data$crisis_start)]
+      
+      if (length(pre_crisis_vols) > 0 && length(crisis_vols) > 0) {
+        pre_mean <- mean(pre_crisis_vols)
+        crisis_mean <- mean(crisis_vols)
+        pct_change <- (crisis_mean / pre_mean - 1) * 100
         
-        persistence_results <- rbind(persistence_results, data.frame(
+        # Test statistical significance
+        t_test <- try(t.test(pre_crisis_vols, crisis_vols), silent = TRUE)
+        if (inherits(t_test, "try-error")) {
+          p_val <- NA
+          sig <- NA
+        } else {
+          p_val <- t_test$p.value
+          sig <- p_val < 0.05
+        }
+        
+        volatility_comparison <- rbind(volatility_comparison, data.frame(
           Asset = asset,
-          GARCH_Persistence = persistence,
-          Half_Life_Days = log(0.5) / log(persistence),
+          Pre_Crisis_Mean_Vol = pre_mean,
+          Crisis_Mean_Vol = crisis_mean,
+          Vol_Change_Pct = pct_change,
+          p_value = p_val,
+          Significant = sig,
           stringsAsFactors = FALSE
         ))
       }
     }
     
-    formatted_kable(persistence_results, "GARCH Volatility Persistence", digits = 4)
+    if (nrow(volatility_comparison) > 0) {
+      formatted_kable(volatility_comparison, "GARCH Volatility Comparison", digits = 4)
+    }
+    
+    # Plot volatility comparison
+    if (nrow(volatility_comparison) > 0) {
+      vol_comparison_plot <- ggplot(volatility_comparison, 
+                                  aes(x = Asset, y = Vol_Change_Pct, fill = Significant)) +
+        geom_bar(stat = "identity") +
+        geom_text(aes(label = paste0(round(Vol_Change_Pct, 1), "%"), 
+                     y = ifelse(Vol_Change_Pct > 0, Vol_Change_Pct + 5, Vol_Change_Pct - 5)),
+                 size = 3) +
+        scale_fill_manual(values = c("TRUE" = "darkred", "FALSE" = "gray70")) +
+        labs(title = "Conditional Volatility Change During Crisis",
+             subtitle = "Based on GARCH models",
+             x = "", y = "Change in Volatility (%)") +
+        theme_report()
+      
+      print(vol_comparison_plot)
+    }
   }
 }
 ```
@@ -2278,37 +2550,128 @@ if (!requireNamespace("strucchange", quietly = TRUE)) {
   # Load the library
   library(strucchange)
   
-  # Test for structural breaks in shipping stocks
+  # Test for structural breaks in shipping stocks with enhanced visualization
   break_results <- list()
+  
+  # Pre-allocate plot grid
+  n_assets <- length(data$shipping_cols)
+  n_cols <- min(2, n_assets)
+  n_rows <- ceiling(n_assets / n_cols)
+  
+  # Create multi-panel layout for plots
+  if (n_assets > 0) {
+    par(mfrow = c(n_rows, n_cols))
+  }
+  
   for (asset in data$shipping_cols) {
     if (asset %in% colnames(data$returns)) {
-      break_test <- test_structural_breaks(data$returns[, asset], data$crisis_start)
+      cat("\n---------------------------------------------\n")
+      cat("Structural Break Analysis for", asset, "\n")
+      cat("---------------------------------------------\n")
+      
+      # Extract return series
+      returns_series <- data$returns[, asset]
+      
+      # Run break tests with better error handling
+      break_test <- test_structural_breaks(returns_series, data$crisis_start)
       break_results[[asset]] <- break_test
       
-      # Plot CUSUM test
+      # CUSUM test
       if (!is.null(break_test$cusum)) {
-        plot(break_test$cusum, main = paste("CUSUM Test for", asset))
+        # Plot with improved visualization
+        plot(break_test$cusum, main = paste("CUSUM Test for", asset),
+             xlab = "Time", ylab = "Empirical fluctuation process")
+        abline(v = which(index(returns_series) == as.Date(data$crisis_start))/length(returns_series), 
+               col = "red", lty = 2)
+        legend("topleft", legend = "Crisis Start", col = "red", lty = 2, cex = 0.7)
         
         # Report Chow test results
         if (!is.null(break_test$chow)) {
           cat("\nChow Test for", asset, "at Red Sea Crisis Date:\n")
           print(break_test$chow)
         }
-        
-        # Plot breakpoints 
-        if (!is.null(break_test$breakpoints)) {
-          # Plot with breakpoints
-          breakdates <- breakpoints(break_test$breakpoints)
-          plot(break_test$breakpoints)
-          
-          # Print estimated break dates
-          cat("\nEstimated Break Dates for", asset, ":\n")
-          print(breakdates)
-        }
       }
     }
   }
   
+  # Reset plot layout
+  par(mfrow = c(1, 1))
+  
+  # Run additional Bai-Perron multiple breakpoint detection
+  # This is more sophisticated than simple Chow tests
+  bp_results <- data.frame(
+    Asset = character(),
+    Optimal_Breaks = numeric(),
+    Breakdates = character(),
+    BIC = numeric(),
+    Crisis_In_CI = logical(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (asset in data$shipping_cols) {
+    if (asset %in% colnames(data$returns)) {
+      ts_data <- as.ts(data$returns[, asset])
+      
+      # Run Bai-Perron test with error handling
+      bp_test <- tryCatch({
+        breakpoints(ts_data ~ 1, h = 15, breaks = 5)
+      }, error = function(e) {
+        warning("Error in breakpoints test for ", asset, ": ", e$message)
+        return(NULL)
+      })
+      
+      if (!is.null(bp_test) && !is.null(bp_test$breakpoints)) {
+        # Get optimal number of breaks based on BIC
+        summary_bp <- summary(bp_test)
+        opt_breaks <- which.min(summary_bp$RSS / summary_bp$nobs + log(summary_bp$nobs) * 
+                              summary_bp$npar / summary_bp$nobs)
+        
+        # Extract breakdates
+        dates <- index(data$returns)[breakdates(bp_test, breaks = opt_breaks)]
+        dates_str <- if (length(dates) > 0) paste(as.character(dates), collapse = ", ") else "None"
+        
+        # Check if crisis date is within confidence intervals
+        crisis_in_ci <- FALSE
+        if (length(dates) > 0) {
+          conf_int <- confint(bp_test, breaks = opt_breaks)
+          crisis_date <- as.Date(data$crisis_start)
+          
+          for (i in 1:length(dates)) {
+            lower_ci <- index(data$returns)[conf_int[i, 1]]
+            upper_ci <- index(data$returns)[conf_int[i, 2]]
+            
+            if (crisis_date >= lower_ci && crisis_date <= upper_ci) {
+              crisis_in_ci <- TRUE
+              break
+            }
+          }
+        }
+        
+        # Add to results
+        bp_results <- rbind(bp_results, data.frame(
+          Asset = asset,
+          Optimal_Breaks = opt_breaks,
+          Breakdates = dates_str,
+          BIC = summary_bp$BIC[opt_breaks + 1],
+          Crisis_In_CI = crisis_in_ci,
+          stringsAsFactors = FALSE
+        ))
+        
+        # Plot breakpoints with confidence intervals
+        plot(bp_test, breaks = opt_breaks, main = paste("Breakpoints in", asset))
+        abline(v = which(index(data$returns) == as.Date(data$crisis_start)), col = "red", lty = 2)
+        legend("topright", legend = c("Breakpoints", "95% CI", "Crisis Start"), 
+               lty = c(1, 1, 2), col = c("blue", "lightblue", "red"), cex = 0.7)
+      }
+    }
+  }
+  
+  # Display Bai-Perron results
+  if (nrow(bp_results) > 0) {
+    formatted_kable(bp_results, "Bai-Perron Multiple Breakpoint Results", digits = 4)
+  }
+  
+  # Create combined summary table
   # Summarize structural break results
   break_summary <- data.frame(
     Asset = character(),
@@ -2316,6 +2679,7 @@ if (!requireNamespace("strucchange", quietly = TRUE)) {
     Chow_Statistic = numeric(),
     Chow_P_Value = numeric(),
     Detected_Breaks = character(),
+    BIC_Optimal_Breaks = numeric(),
     stringsAsFactors = FALSE
   )
   
@@ -2341,6 +2705,13 @@ if (!requireNamespace("strucchange", quietly = TRUE)) {
       }
     }
     
+    # Get optimal breaks from BP test
+    opt_breaks <- NA
+    bp_row <- bp_results[bp_results$Asset == asset, ]
+    if (nrow(bp_row) > 0) {
+      opt_breaks <- bp_row$Optimal_Breaks
+    }
+    
     # Add to summary
     break_summary <- rbind(break_summary, data.frame(
       Asset = asset,
@@ -2348,11 +2719,40 @@ if (!requireNamespace("strucchange", quietly = TRUE)) {
       Chow_Statistic = chow_stat,
       Chow_P_Value = chow_pval,
       Detected_Breaks = break_dates,
+      BIC_Optimal_Breaks = opt_breaks,
       stringsAsFactors = FALSE
     ))
   }
   
   formatted_kable(break_summary, "Structural Break Test Results", digits = 4)
+  
+  # Calculate summary statistics on break tests
+  percent_with_break <- sum(break_summary$Crisis_Date_Is_Break, na.rm = TRUE) / 
+                         nrow(break_summary) * 100
+  
+  cat("\nSummary of Structural Break Tests:\n")
+  cat(paste0(round(percent_with_break, 1), "% of assets show significant structural break at crisis date\n"))
+  
+  # Create a visualization of break test results
+  if (nrow(break_summary) > 0) {
+    # Create dataset for ggplot
+    break_viz <- break_summary
+    break_viz$SignificantBreak <- ifelse(break_viz$Crisis_Date_Is_Break, "Yes", "No")
+    
+    # Plot
+    break_plot <- ggplot(break_viz, aes(x = Asset, y = -log10(Chow_P_Value), fill = SignificantBreak)) +
+      geom_bar(stat = "identity") +
+      geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+      scale_fill_manual(values = c("Yes" = "darkred", "No" = "gray70")) +
+      labs(title = "Structural Break Test Results",
+           subtitle = "Higher values indicate stronger evidence of a break at the crisis date",
+           x = "", y = "-log10(p-value)",
+           caption = "Dashed line represents p=0.05 significance threshold") +
+      theme_report() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    print(break_plot)
+  }
 }
 ```
 
