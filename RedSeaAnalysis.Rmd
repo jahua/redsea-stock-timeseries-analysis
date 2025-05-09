@@ -54,6 +54,7 @@ This research quantifies the financial market impact of the Red Sea shipping cri
 \vspace{0.25cm}
 
 \textbf{Key Findings:}
+
 \begin{itemize}
   \item \textbf{Volatility:} Shipping stocks experienced 75-120\% volatility increases during the crisis, statistically significant at the 95\% confidence level. GARCH models confirm volatility persistence doubled during the crisis period.
   
@@ -469,27 +470,27 @@ analyze_correlation_changes <- function(returns, crisis_start) {
                         midpoint = 0, limit = c(-1, 1), space = "Lab",
                         name = "Correlation\nChange") +
     theme_minimal() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
-          axis.text.y = element_text(size = 9),
-          axis.title = element_blank(),
-          panel.grid = element_blank(),
-          legend.position = "bottom") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_blank()) +
     coord_fixed() +
-    labs(title = "Changes in Correlation During Crisis",
-         subtitle = paste("Average Correlation Change:", 
-                        round(mean(cor_change$changes[upper.tri(cor_change$changes)], na.rm = TRUE), 3)))
-
-  print(p)
+    labs(title = "Changes in Correlation Structure During Crisis")
   
-  # Calculate summary statistics
+  # Calculate summary statistics for changes
+  mean_change <- mean(cor_changes[upper.tri(cor_changes)], na.rm = TRUE)
+  sd_change <- sd(cor_changes[upper.tri(cor_changes)], na.rm = TRUE)
+  max_increase <- max(cor_changes[upper.tri(cor_changes)], na.rm = TRUE)
+  max_decrease <- min(cor_changes[upper.tri(cor_changes)], na.rm = TRUE)
+  pct_increase <- mean(cor_changes[upper.tri(cor_changes)] > 0, na.rm = TRUE) * 100
+  
   summary_stats <- data.frame(
-    Mean_Change = mean(cor_changes[upper.tri(cor_changes)]),
-    SD_Change = sd(cor_changes[upper.tri(cor_changes)]),
-    Max_Increase = max(cor_changes[upper.tri(cor_changes)]),
-    Max_Decrease = min(cor_changes[upper.tri(cor_changes)]),
-    Pct_Increase = mean(cor_changes[upper.tri(cor_changes)] > 0) * 100
+    Mean_Change = mean_change,
+    SD_Change = sd_change,
+    Max_Increase = max_increase,
+    Max_Decrease = max_decrease,
+    Pct_Increase = pct_increase
   )
   
+  # Return the results
   return(list(
     plot = p,
     summary = summary_stats,
