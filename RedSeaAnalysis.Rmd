@@ -54,7 +54,6 @@ This research quantifies the financial market impact of the Red Sea shipping cri
 \vspace{0.25cm}
 
 \textbf{Key Findings:}
-
 \begin{itemize}
   \item \textbf{Volatility:} Shipping stocks experienced 75-120\% volatility increases during the crisis, statistically significant at the 95\% confidence level. GARCH models confirm volatility persistence doubled during the crisis period.
   
@@ -64,7 +63,7 @@ This research quantifies the financial market impact of the Red Sea shipping cri
   
   \item \textbf{Event Response:} Structural break tests confirm the November 19th crisis start date represents a statistically significant change point in shipping stock dynamics, with market reactions evolving from initially positive (anticipating higher rates) to negative (reflecting operational challenges).
   
-  \item \textbf{Economic Impact:} Estimated $2.5-3 billion in annual additional shipping costs, 8-day average trip extensions, and 30\% increased fuel consumption due to Cape of Good Hope rerouting.
+  \item \textbf{Economic Impact:} Estimated \$2.5-3 billion in annual additional shipping costs, 8-day average trip extensions, and 30\% increased fuel consumption due to Cape of Good Hope rerouting.
 \end{itemize}
 
 \vspace{0.25cm}
@@ -473,7 +472,7 @@ analyze_correlation_changes <- function(returns, crisis_start) {
     theme(axis.text.x = element_text(angle = 45, hjust = 1),
           axis.title = element_blank()) +
     coord_fixed() +
-    labs(title = "Changes in Correlation Structure During Crisis")
+    labs(title = "Changes in Correlation During Crisis")
   
   # Calculate summary statistics for changes
   mean_change <- mean(cor_changes[upper.tri(cor_changes)], na.rm = TRUE)
