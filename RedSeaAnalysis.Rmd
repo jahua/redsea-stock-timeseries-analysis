@@ -469,10 +469,17 @@ analyze_correlation_changes <- function(returns, crisis_start) {
                         midpoint = 0, limit = c(-1, 1), space = "Lab",
                         name = "Correlation\nChange") +
     theme_minimal() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1),
-          axis.title = element_blank()) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+          axis.text.y = element_text(size = 9),
+          axis.title = element_blank(),
+          panel.grid = element_blank(),
+          legend.position = "bottom") +
     coord_fixed() +
-    labs(title = "Changes in Correlation Structure During Crisis")
+    labs(title = "Changes in Correlation During Crisis",
+         subtitle = paste("Average Correlation Change:", 
+                        round(mean(cor_change$changes[upper.tri(cor_change$changes)], na.rm = TRUE), 3)))
+
+  print(p)
   
   # Calculate summary statistics
   summary_stats <- data.frame(
@@ -2674,47 +2681,96 @@ if (!requireNamespace("strucchange", quietly = TRUE)) {
       })
       
       if (!is.null(bp_test) && !is.null(bp_test$breakpoints)) {
-        # Get optimal number of breaks based on BIC
-        summary_bp <- summary(bp_test)
-        opt_breaks <- which.min(summary_bp$RSS / summary_bp$nobs + log(summary_bp$nobs) * 
-                              summary_bp$npar / summary_bp$nobs)
+        # Get optimal number of breaks based on BIC with better error handling
+        summary_bp <- tryCatch({
+          summary(bp_test)
+        }, error = function(e) {
+          warning("Error in summary(bp_test) for ", asset, ": ", e$message)
+          return(NULL)
+        })
         
-        # Extract breakdates
-        dates <- index(data$returns)[breakdates(bp_test, breaks = opt_breaks)]
-        dates_str <- if (length(dates) > 0) paste(as.character(dates), collapse = ", ") else "None"
-        
-        # Check if crisis date is within confidence intervals
-        crisis_in_ci <- FALSE
-        if (length(dates) > 0) {
-          conf_int <- confint(bp_test, breaks = opt_breaks)
-          crisis_date <- as.Date(data$crisis_start)
+        # Only proceed if summary_bp contains the expected components
+        if (!is.null(summary_bp) && 
+            !is.null(summary_bp$RSS) && 
+            !is.null(summary_bp$nobs) && 
+            !is.null(summary_bp$npar) && 
+            is.numeric(summary_bp$nobs) && 
+            summary_bp$nobs > 0) {
           
-          for (i in 1:length(dates)) {
-            lower_ci <- index(data$returns)[conf_int[i, 1]]
-            upper_ci <- index(data$returns)[conf_int[i, 2]]
+          # Calculate BIC for each number of breaks
+          bic_values <- summary_bp$RSS / summary_bp$nobs + 
+                       log(summary_bp$nobs) * summary_bp$npar / summary_bp$nobs
+          
+          # Find optimal breaks based on minimum BIC
+          if (length(bic_values) > 0 && !all(is.na(bic_values))) {
+            opt_breaks <- which.min(bic_values)
             
-            if (crisis_date >= lower_ci && crisis_date <= upper_ci) {
-              crisis_in_ci <- TRUE
-              break
+            # Extract breakdates
+            dates <- index(data$returns)[breakdates(bp_test, breaks = opt_breaks)]
+            dates_str <- if (length(dates) > 0) paste(as.character(dates), collapse = ", ") else "None"
+            
+            # Check if crisis date is within confidence intervals
+            crisis_in_ci <- FALSE
+            if (length(dates) > 0) {
+              conf_int <- tryCatch({
+                confint(bp_test, breaks = opt_breaks)
+              }, error = function(e) {
+                warning("Error in confint(bp_test) for ", asset, ": ", e$message)
+                return(NULL)
+              })
+              
+              if (!is.null(conf_int)) {
+                crisis_date <- as.Date(data$crisis_start)
+                
+                for (i in 1:length(dates)) {
+                  # Only proceed if the confidence intervals exist and make sense
+                  if (i <= nrow(conf_int) && ncol(conf_int) >= 2) {
+                    lower_idx <- conf_int[i, 1]
+                    upper_idx <- conf_int[i, 2]
+                    
+                    if (!is.na(lower_idx) && !is.na(upper_idx) && 
+                        lower_idx > 0 && upper_idx > 0 &&
+                        lower_idx <= length(index(data$returns)) && 
+                        upper_idx <= length(index(data$returns))) {
+                      
+                      lower_ci <- index(data$returns)[lower_idx]
+                      upper_ci <- index(data$returns)[upper_idx]
+                      
+                      if (crisis_date >= lower_ci && crisis_date <= upper_ci) {
+                        crisis_in_ci <- TRUE
+                        break
+                      }
+                    }
+                  }
+                }
+              }
             }
+            
+            # Add to results
+            bp_results <- rbind(bp_results, data.frame(
+              Asset = asset,
+              Optimal_Breaks = opt_breaks,
+              Breakdates = dates_str,
+              BIC = bic_values[opt_breaks],
+              Crisis_In_CI = crisis_in_ci,
+              stringsAsFactors = FALSE
+            ))
+            
+            # Plot breakpoints with confidence intervals
+            tryCatch({
+              plot(bp_test, breaks = opt_breaks, main = paste("Breakpoints in", asset))
+              abline(v = which(index(data$returns) == as.Date(data$crisis_start)), col = "red", lty = 2)
+              legend("topright", legend = c("Breakpoints", "95% CI", "Crisis Start"), 
+                    lty = c(1, 1, 2), col = c("blue", "lightblue", "red"), cex = 0.7)
+            }, error = function(e) {
+              warning("Error plotting breakpoints for ", asset, ": ", e$message)
+            })
+          } else {
+            cat("No valid BIC values found for", asset, "\n")
           }
+        } else {
+          cat("Unable to calculate BIC for", asset, "- summary statistics missing\n")
         }
-        
-        # Add to results
-        bp_results <- rbind(bp_results, data.frame(
-          Asset = asset,
-          Optimal_Breaks = opt_breaks,
-          Breakdates = dates_str,
-          BIC = summary_bp$BIC[opt_breaks + 1],
-          Crisis_In_CI = crisis_in_ci,
-          stringsAsFactors = FALSE
-        ))
-        
-        # Plot breakpoints with confidence intervals
-        plot(bp_test, breaks = opt_breaks, main = paste("Breakpoints in", asset))
-        abline(v = which(index(data$returns) == as.Date(data$crisis_start)), col = "red", lty = 2)
-        legend("topright", legend = c("Breakpoints", "95% CI", "Crisis Start"), 
-               lty = c(1, 1, 2), col = c("blue", "lightblue", "red"), cex = 0.7)
       }
     }
   }
