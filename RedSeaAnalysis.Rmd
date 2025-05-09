@@ -10,7 +10,6 @@ output:
 header-includes:
 - \usepackage{graphicx}
 - \usepackage{titling}
-- \usepackage[a4paper,margin=1in]{geometry}
 - \usepackage{booktabs}
 ---
 
@@ -1810,7 +1809,7 @@ if (nrow(monthly_stats) > 0) {
 
 # Stationarity and Correlation Analysis
 
-```{r stationarity-correlation}
+```{r stationarity-correlation-2}
 # Test stationarity
 stationarity_results <- enhanced_stationarity_tests(data$returns)
 formatted_kable(stationarity_results, "Stationarity Test Results", digits = 4)
@@ -2202,11 +2201,11 @@ if ("SPY_returns" %in% colnames(data$returns)) {
 
 # Value at Risk Analysis
 
-```{r var-analysis}
+```{r var-analysis-2}
 # Calculate VaR with improved methodology
 var_results <- compare_var_periods(data$returns, 
-                                 c(data$shipping_cols, data$market_cols), 
-                                 data$crisis_start)
+                                c(data$shipping_cols, data$market_cols), 
+                                data$crisis_start)
 
 # Display VaR results
 formatted_kable(var_results, "Value at Risk Analysis", digits = 2)
@@ -2762,7 +2761,7 @@ if (length(arima_models) > 0) {
 
 # Hypothesis Testing
 
-```{r hypothesis-testing}
+```{r hypothesis-testing-2}
 # Test volatility changes
 vol_test <- test_volatility_changes(data$returns, data$shipping_cols, data$crisis_start)
 formatted_kable(vol_test, "Volatility Change Tests", digits = 4)
@@ -3219,6 +3218,18 @@ if (requireNamespace("rugarch", quietly = TRUE)) {
           alpha_indices <- grep("alpha", names(model_coef))
           beta_indices <- grep("beta", names(model_coef))
           
+          # Ensure model_type is defined - defensive approach
+          if (!exists("model_type")) {
+            model_type <- "GARCH"  # Default fallback
+          }
+          if (!exists("garch_order")) {
+            garch_order <- c(1, 1)  # Default fallback
+          }
+          if (!exists("arma_order")) {
+            arma_order <- c(0, 0)   # Default fallback
+          }
+          
+          # Now proceed with calculations
           if (length(alpha_indices) > 0 && length(beta_indices) > 0) {
             persistence <- sum(model_coef[alpha_indices]) + sum(model_coef[beta_indices])
             
@@ -3380,45 +3391,9 @@ if (requireNamespace("rugarch", quietly = TRUE)) {
 }
 ```
 
-## Structural Break Testing
+## 
 
-```{r structural-breaks}
-# Run structural break tests on shipping stocks
-structural_break_tests <- list()
-
-for (asset in data$shipping_cols) {
-  if (asset %in% colnames(data$returns)) {
-    cat("\n---------------------------------------------\n")
-    cat("Structural Break Testing for", asset, "\n")
-    cat("---------------------------------------------\n")
-    
-    # Extract return series
-    returns_series <- as.numeric(data$returns[, asset])
-    
-    # Run structural break tests
-    test_results <- test_structural_breaks(returns_series, data$crisis_start)
-    
-    # Store results
-    structural_break_tests[[asset]] <- test_results
-    
-    # Print test results
-    cat("\nCUSUM Test:\n")
-    print(test_results$cusum)
-    cat("\nChow Test:\n")
-    print(test_results$chow)
-    cat("\nBreakpoints Test:\n")
-    print(test_results$breakpoints)
-  }
-}
-
-# Display structural break test results
-if (length(structural_break_tests) > 0) {
-  for (asset in names(structural_break_tests)) {
-    cat("\nStructural Break Test Results for", asset, "\n")
-    cat("---------------------------------------------\n")
-    print(structural_break_tests[[asset]])
-  }
-}
+```         
 ```
 
 # Conclusion
