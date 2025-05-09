@@ -1888,53 +1888,85 @@ print(change_heatmap)
 formatted_kable(cor_change$summary, "Correlation Change Summary Statistics", digits = 4)
 
 # Calculate and display the most significant correlation changes
-significant_changes <- data.frame(
-  Asset_Pair = character(),
-  Pre_Crisis = numeric(),
-  Crisis = numeric(),
-  Change = numeric(),
-  Pct_Change = numeric(),
-  stringsAsFactors = FALSE
-)
+# Pre-allocate a list to collect results
+correlation_results <- list()
+result_index <- 1
 
+# Loop through unique asset pairs
 for (i in 1:(ncol(data$returns)-1)) {
   for (j in (i+1):ncol(data$returns)) {
     # Get asset names
     asset1 <- colnames(data$returns)[i]
     asset2 <- colnames(data$returns)[j]
     
-    # Calculate correlations for different periods
-    pre_cor <- cor(data$returns[index(data$returns) < as.Date(data$crisis_start), asset1],
-                  data$returns[index(data$returns) < as.Date(data$crisis_start), asset2],
-                  use = "pairwise.complete.obs")
-    
-    crisis_cor <- cor(data$returns[index(data$returns) >= as.Date(data$crisis_start), asset1],
-                     data$returns[index(data$returns) >= as.Date(data$crisis_start), asset2],
-                     use = "pairwise.complete.obs")
-    
-    # Calculate change
-    change <- crisis_cor - pre_cor
-    pct_change <- ifelse(pre_cor != 0, (change / abs(pre_cor)) * 100, NA)
-    
-    # Add to results
-    significant_changes <- rbind(significant_changes, data.frame(
-      Asset_Pair = paste(asset1, "-", asset2),
-      Pre_Crisis = pre_cor,
-      Crisis = crisis_cor,
-      Change = change,
-      Pct_Change = pct_change,
-      stringsAsFactors = FALSE
-    ))
+    # Skip processing if we don't have enough data
+    tryCatch({
+      # Extract data for different periods
+      pre_crisis_data1 <- data$returns[index(data$returns) < as.Date(data$crisis_start), asset1]
+      pre_crisis_data2 <- data$returns[index(data$returns) < as.Date(data$crisis_start), asset2]
+      crisis_data1 <- data$returns[index(data$returns) >= as.Date(data$crisis_start), asset1]
+      crisis_data2 <- data$returns[index(data$returns) >= as.Date(data$crisis_start), asset2]
+      
+      # Only proceed if we have enough data
+      if (length(pre_crisis_data1) >= 10 && length(pre_crisis_data2) >= 10 && 
+          length(crisis_data1) >= 10 && length(crisis_data2) >= 10) {
+        
+        # Calculate correlations for different periods
+        pre_cor <- cor(pre_crisis_data1, pre_crisis_data2, use = "pairwise.complete.obs")
+        crisis_cor <- cor(crisis_data1, crisis_data2, use = "pairwise.complete.obs")
+        
+        # Calculate change
+        change <- crisis_cor - pre_cor
+        pct_change <- ifelse(pre_cor != 0, (change / abs(pre_cor)) * 100, NA)
+        
+        # Store result in list (safer than row-by-row rbind)
+        correlation_results[[result_index]] <- list(
+          Asset_Pair = paste(asset1, "-", asset2),
+          Pre_Crisis = pre_cor,
+          Crisis = crisis_cor,
+          Change = change,
+          Pct_Change = pct_change
+        )
+        result_index <- result_index + 1
+      }
+    }, error = function(e) {
+      # Just skip this pair if there's an error
+      warning(paste("Error calculating correlation for", asset1, "-", asset2, ":", e$message))
+    })
   }
 }
 
-# Sort by absolute change
-significant_changes <- significant_changes[order(-abs(significant_changes$Change)),]
-
-# Display top changes
-if (nrow(significant_changes) > 0) {
-  top_changes <- head(significant_changes, 5)
-  formatted_kable(top_changes, "Top 5 Largest Correlation Changes", digits = 3)
+# Convert list to data frame
+if (length(correlation_results) > 0) {
+  # Create data frame from list
+  significant_changes <- data.frame(
+    Asset_Pair = character(length(correlation_results)),
+    Pre_Crisis = numeric(length(correlation_results)),
+    Crisis = numeric(length(correlation_results)),
+    Change = numeric(length(correlation_results)),
+    Pct_Change = numeric(length(correlation_results)),
+    stringsAsFactors = FALSE
+  )
+  
+  # Fill data frame from list
+  for (i in 1:length(correlation_results)) {
+    significant_changes$Asset_Pair[i] <- correlation_results[[i]]$Asset_Pair
+    significant_changes$Pre_Crisis[i] <- correlation_results[[i]]$Pre_Crisis
+    significant_changes$Crisis[i] <- correlation_results[[i]]$Crisis
+    significant_changes$Change[i] <- correlation_results[[i]]$Change
+    significant_changes$Pct_Change[i] <- correlation_results[[i]]$Pct_Change
+  }
+  
+  # Sort by absolute change
+  significant_changes <- significant_changes[order(-abs(significant_changes$Change)),]
+  
+  # Display top changes
+  if (nrow(significant_changes) > 0) {
+    top_changes <- head(significant_changes, 5)
+    formatted_kable(top_changes, "Top 5 Largest Correlation Changes", digits = 3)
+  }
+} else {
+  cat("No significant correlation changes found between assets.\n")
 }
 ```
 
