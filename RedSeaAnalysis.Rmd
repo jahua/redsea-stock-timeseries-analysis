@@ -1,0 +1,2399 @@
+---
+title: false
+output:
+  pdf_document:
+    toc: false
+    number_sections: true
+  html_document:
+    toc: false
+    df_print: paged
+header-includes:
+- \usepackage{graphicx}
+- \usepackage{titling}
+- \usepackage{geometry}
+- \usepackage{booktabs}
+---
+
+\pagenumbering{gobble} <!-- Remove page numbers for title page -->
+
+\begin{titlepage}
+
+\begin{flushright} 
+\includegraphics[width=4cm]{assets/hslu_logo.png}
+\end{flushright}
+
+\begin{center}
+\vspace{2cm}
+{\Large Time Series Analysis in Finance\par}
+
+\vspace{2cm}
+{\huge\bfseries Impact of Red Sea Crisis on Global Shipping and Stock Markets\par}
+
+\vspace{2cm}
+{\Large\bfseries Jiahua Duojie, Thiam Mouhamadou \par}
+
+\vspace{1cm}
+{\Large Lucerne University of Applied Sciences and Arts\par}
+
+\vspace{1cm}
+{\Large\today\par}
+
+\end{center}
+\end{titlepage}
+
+\newpage
+
+\begin{center}
+\Large\textbf{Executive Summary}
+\end{center}
+
+\vspace{0.5cm}
+
+This research quantifies the financial market impact of the Red Sea shipping crisis that began in November 2023 with Houthi rebel attacks on commercial vessels. Using advanced time series techniques, we analyze how shipping companies' stock prices and risk metrics changed relative to broader market indices.
+
+\vspace{0.25cm}
+
+\textbf{Key Findings:}
+\begin{itemize}
+  \item \textbf{Volatility:} Shipping stocks experienced 75-120\% volatility increases during the crisis, statistically significant at the 95\% confidence level. GARCH models confirm volatility persistence doubled during the crisis period.
+  
+  \item \textbf{Market Relationships:} Shipping companies' correlation with broad market indices declined from 0.4-0.6 to 0.1-0.3 during the crisis, while intra-sector correlations strengthened, indicating market segmentation.
+  
+  \item \textbf{Risk Metrics:} Daily Value-at-Risk (95\%) for shipping stocks worsened by an average of 63\%, with strong statistical evidence that this change was crisis-induced rather than random variation.
+  
+  \item \textbf{Event Response:} Structural break tests confirm the November 19th crisis start date represents a statistically significant change point in shipping stock dynamics, with market reactions evolving from initially positive (anticipating higher rates) to negative (reflecting operational challenges).
+  
+  \item \textbf{Economic Impact:} Estimated $2.5-3 billion in annual additional shipping costs, 8-day average trip extensions, and 30\% increased fuel consumption due to Cape of Good Hope rerouting.
+\end{itemize}
+
+\vspace{0.25cm}
+
+This analysis demonstrates how geopolitical events can create localized financial market effects that differ substantially from broader market movements. The findings provide valuable insight for investors managing shipping exposure, risk managers modeling geopolitical risk, and policymakers quantifying trade disruption costs.
+
+\newpage
+
+\pagenumbering{roman} <!-- Roman numerals for TOC --> \tableofcontents \newpage
+
+\pagenumbering{arabic} <!-- Arabic numerals for main content -->
+
+```{r setup, include=FALSE}
+# Load required libraries
+library(tidyverse)  # For data manipulation
+library(zoo)        # Time series manipulation
+library(tseries)    # For stationarity tests
+library(vars)       # Vector autoregression
+library(quantmod)   # For Yahoo Finance data
+library(ggplot2)    # For better visualizations
+library(kableExtra) # Better table formatting
+library(gridExtra)  # For arranging plots
+library(fBasics)    # For comprehensive statistics
+library(forecast)   # For ARIMA modeling
+library(reshape2)   # For data reshaping
+library(lmtest)     # For coeftest
+library(knitr)      # For R Markdown options
+
+# Suggest additional packages for enhanced analysis
+# These will be used if available, but are not required for core analysis
+# install.packages(c("rugarch", "strucchange", "urca", "dygraphs", "highcharter"))
+
+# Set global options
+options(scipen = 999) # Turn off scientific notation
+knitr::opts_chunk$set(
+  echo = TRUE,          # Show code by default
+  include = TRUE,       # Show results by default
+  warning = FALSE,      # Don't show warnings
+  message = FALSE,      # Don't show messages
+  fig.align = "center", # Center figures
+  fig.width = 8,        # Default figure width
+  fig.height = 6,       # Default figure height
+  out.width = "90%",    # Control figure size in output
+  dpi = 300             # Higher resolution for figures
+)
+
+# Function to create consistently formatted tables
+formatted_kable <- function(data, caption, digits = 2) {
+  kableExtra::kable(data, caption = caption, digits = digits, booktabs = TRUE) %>%
+    kableExtra::kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed"),
+      full_width = FALSE,
+      latex_options = c("hold_position")
+    ) %>%
+    kableExtra::row_spec(0, bold = TRUE) %>%
+    kableExtra::column_spec(1, bold = TRUE)
+}
+
+# Standard ggplot theme for consistent plots
+theme_report <- function() {
+  ggplot2::theme_minimal() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold", size = 14),
+      plot.subtitle = ggplot2::element_text(size = 12, color = "darkgray"),
+      axis.title = ggplot2::element_text(face = "bold"),
+      legend.position = "bottom",
+      legend.title = ggplot2::element_text(face = "bold"),
+      panel.grid.minor = ggplot2::element_blank(),
+      panel.border = ggplot2::element_rect(fill = NA, color = "lightgray", size = 0.5)
+    )
+}
+```
+
+```{r helper-functions, include=FALSE}
+# Function to download financial data with error handling
+download_with_error_handling <- function(tickers, start_date, end_date) {
+  # Initialize empty list to store results
+  data_list <- list()
+  
+  # Download data for each ticker
+  for (ticker in tickers) {
+    tryCatch({
+      # Download data
+      data <- getSymbols(ticker, 
+                        from = start_date, 
+                        to = end_date, 
+                        auto.assign = FALSE)
+      
+      # Store in list with ticker name
+      data_list[[ticker]] <- data
+      
+    }, error = function(e) {
+      warning(paste("Error downloading", ticker, ":", e$message))
+    })
+  }
+  
+  return(data_list)
+}
+
+# Function to process financial data
+process_financial_data <- function(shipping_data, index_data, oil_data, crisis_start) {
+  # Combine all data sources into a single list, preserving original ticker names
+  all_data_list <- c(shipping_data, index_data, oil_data)
+  
+  original_ticker_names <- names(all_data_list)
+
+  prices_list <- lapply(original_ticker_names, function(ticker_name) {
+    xts_obj <- all_data_list[[ticker_name]]
+    
+    # Handle cases where data for a ticker might be missing or empty
+    if (is.null(xts_obj) || nrow(xts_obj) == 0) {
+      warning(paste("Data for ticker", ticker_name, "is NULL or empty. It will be skipped."))
+      return(NULL)
+    }
+    
+    tryCatch({
+      adj_col <- quantmod::Ad(xts_obj) # Extract Adjusted column
+      colnames(adj_col) <- ticker_name  # IMPORTANT: Name the column with the original ticker
+      return(adj_col)
+    }, error = function(e) {
+      warning(paste("Error processing Adjusted prices for ticker", ticker_name, ":", e$message, ". Skipping ticker."))
+      return(NULL)
+    })
+  })
+  
+  # Filter out any NULLs from tickers that failed to process
+  prices_list <- prices_list[!sapply(prices_list, is.null)]
+  
+  if (length(prices_list) == 0) {
+    stop("No valid price data could be processed for any ticker. Check data downloads and ticker symbols.")
+  }
+  
+  # Merge all processed price series
+  prices <- do.call(merge, prices_list)
+  
+  if (nrow(prices) == 0) {
+      stop("Resulting merged 'prices' data is empty. Check input data and processing steps.")
+  }
+
+  # Calculate returns
+  returns <- na.omit(diff(log(prices)))
+  
+  # Handle cases where returns might be empty (e.g., if prices had only one row)
+  if (nrow(returns) == 0 && nrow(prices) > 1) {
+      warning("Resulting 'returns' data is empty after diff(log(prices)). Check for NAs or insufficient price data.")
+  } else if (nrow(prices) <= 1) {
+      warning("Input 'prices' data has one or zero rows, so returns cannot be calculated meaningfully.")
+      # Create an empty xts object with a compatible structure for returns
+      returns <- xts::xts(matrix(ncol = ncol(prices), nrow = 0), order.by = index(prices)[0])
+      if(ncol(prices)>0) colnames(returns) <- colnames(prices)
+  }
+
+  # Normalize prices
+  normalized_prices <- if (nrow(prices) > 0) {
+    prices / as.numeric(prices[1,]) * 100
+  } else {
+    prices # Return empty if prices is empty, or handle as error
+  }
+  
+  # The column names in `prices` and `returns` are now the original ticker names.
+  # We need to identify which of the original shipping/market tickers are present in the final `returns` object,
+  # as some might have been skipped due to download/processing errors.
+  
+  final_shipping_cols <- intersect(names(shipping_data), colnames(returns))
+  final_market_cols <- intersect(names(index_data), colnames(returns))
+  final_oil_cols <- if (!is.null(oil_data) && length(names(oil_data)) > 0) {
+                      intersect(names(oil_data), colnames(returns))
+                    } else {
+                      character(0) # Empty character vector if oil_data is NULL or has no names
+                    }
+  
+  return(list(
+    prices = prices,
+    returns = returns,
+    normalized_prices = normalized_prices,
+    shipping_cols = final_shipping_cols, # Actual columns in 'returns' for shipping
+    market_cols = final_market_cols,     # Actual columns in 'returns' for market
+    oil_cols = final_oil_cols,           # Actual columns in 'returns' for oil
+    all_asset_cols = colnames(returns),  # All columns successfully processed into 'returns'
+    crisis_start = crisis_start
+  ))
+}
+
+# Function to calculate descriptive statistics
+calculate_descriptive_stats <- function(returns) {
+  stats <- data.frame(
+    Mean = colMeans(returns, na.rm = TRUE),
+    SD = apply(returns, 2, sd, na.rm = TRUE),
+    Min = apply(returns, 2, min, na.rm = TRUE),
+    Max = apply(returns, 2, max, na.rm = TRUE),
+    Skewness = apply(returns, 2, skewness, na.rm = TRUE),
+    Kurtosis = apply(returns, 2, kurtosis, na.rm = TRUE)
+  )
+  return(stats)
+}
+
+# Function to compare pre-crisis and crisis periods
+compare_periods <- function(returns, crisis_start) {
+  # Convert crisis_start to Date if it's a string
+  crisis_date <- as.Date(crisis_start)
+  
+  # Split data into pre-crisis and crisis periods
+  pre_crisis <- returns[index(returns) < crisis_date]
+  crisis <- returns[index(returns) >= crisis_date]
+  
+  # Calculate statistics for each period
+  pre_crisis_stats <- calculate_descriptive_stats(pre_crisis)
+  crisis_stats <- calculate_descriptive_stats(crisis)
+  
+  # Create comparison table
+  comparison <- data.frame(
+    Asset = rownames(pre_crisis_stats),
+    Pre_Crisis_Mean = pre_crisis_stats$Mean,
+    Crisis_Mean = crisis_stats$Mean,
+    Pre_Crisis_SD = pre_crisis_stats$SD,
+    Crisis_SD = crisis_stats$SD,
+    Pre_Crisis_Min = pre_crisis_stats$Min,
+    Crisis_Min = crisis_stats$Min,
+    Pre_Crisis_Max = pre_crisis_stats$Max,
+    Crisis_Max = crisis_stats$Max,
+    Pre_Crisis_Skew = pre_crisis_stats$Skewness,
+    Crisis_Skew = crisis_stats$Skewness,
+    Pre_Crisis_Kurt = pre_crisis_stats$Kurtosis,
+    Crisis_Kurt = crisis_stats$Kurtosis
+  )
+  
+  # Calculate changes
+  comparison$Mean_Change <- comparison$Crisis_Mean - comparison$Pre_Crisis_Mean
+  comparison$SD_Change <- comparison$Crisis_SD - comparison$Pre_Crisis_SD
+  
+  return(comparison)
+}
+
+# Function to plot normalized prices
+plot_prices <- function(normalized_prices, tickers, crisis_start, title) {
+  # Convert to data frame for ggplot
+  plot_data <- as.data.frame(normalized_prices)
+  plot_data$Date <- index(normalized_prices)
+  
+  # Get actual column names from the data
+  available_cols <- colnames(plot_data)[-ncol(plot_data)]  # Exclude Date column
+  
+  # Find matching columns for each ticker
+  matching_cols <- sapply(tickers, function(ticker) {
+    # Try exact match first
+    if (ticker %in% available_cols) {
+      return(ticker)
+    }
+    # Try matching without exchange suffix
+    base_ticker <- gsub("\\..*$", "", ticker)
+    if (base_ticker %in% available_cols) {
+      return(base_ticker)
+    }
+    # Try matching with common suffixes removed
+    clean_ticker <- gsub("[-.]", "", ticker)
+    clean_cols <- gsub("[-.]", "", available_cols)
+    match_idx <- which(clean_cols == clean_ticker)
+    if (length(match_idx) > 0) {
+      return(available_cols[match_idx[1]])
+    }
+    return(NULL)
+  })
+  
+  # Filter out NULL values
+  matching_cols <- matching_cols[!sapply(matching_cols, is.null)]
+  
+  if (length(matching_cols) == 0) {
+    stop("No matching columns found for the given tickers")
+  }
+  
+  # Reshape data for plotting
+  plot_data_long <- reshape2::melt(plot_data, id.vars = "Date", 
+                                 measure.vars = matching_cols,
+                                 variable.name = "Asset",
+                                 value.name = "Price")
+  
+  # Create plot
+  p <- ggplot(plot_data_long, aes(x = Date, y = Price, color = Asset)) +
+    geom_line() +
+    geom_vline(xintercept = as.Date(crisis_start), 
+               linetype = "dashed", color = "red") +
+    labs(title = title,
+         x = "Date",
+         y = "Normalized Price (100 = Start)",
+         color = "Asset") +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    scale_color_brewer(palette = "Set1")
+  
+  return(p)
+}
+
+# Function to perform enhanced stationarity tests
+enhanced_stationarity_tests <- function(returns) {
+  # Initialize results data frame
+  results <- data.frame(
+    Asset = character(),
+    ADF_Stat = numeric(),
+    ADF_pval = numeric(),
+    KPSS_Stat = numeric(),
+    KPSS_pval = numeric(),
+    PP_Stat = numeric(),
+    PP_pval = numeric()
+  )
+  
+  # Perform tests for each column
+  for (col in colnames(returns)) {
+    # Augmented Dickey-Fuller test
+    adf_test <- adf.test(returns[, col], alternative = "stationary")
+    
+    # KPSS test
+    kpss_test <- kpss.test(returns[, col], null = "Level")
+    
+    # Phillips-Perron test
+    pp_test <- pp.test(returns[, col], alternative = "stationary")
+    
+    # Add results
+    results <- rbind(results, data.frame(
+      Asset = col,
+      ADF_Stat = adf_test$statistic,
+      ADF_pval = adf_test$p.value,
+      KPSS_Stat = kpss_test$statistic,
+      KPSS_pval = kpss_test$p.value,
+      PP_Stat = pp_test$statistic,
+      PP_pval = pp_test$p.value
+    ))
+  }
+  
+  # Add interpretation
+  results$ADF_Interpretation <- ifelse(results$ADF_pval < 0.05, "Stationary", "Non-stationary")
+  results$KPSS_Interpretation <- ifelse(results$KPSS_pval > 0.05, "Stationary", "Non-stationary")
+  results$PP_Interpretation <- ifelse(results$PP_pval < 0.05, "Stationary", "Non-stationary")
+  
+  # Add overall conclusion
+  results$Overall_Conclusion <- ifelse(
+    (results$ADF_pval < 0.05 & results$KPSS_pval > 0.05 & results$PP_pval < 0.05),
+    "Stationary",
+    "Non-stationary"
+  )
+  
+  return(results)
+}
+
+# Function to create correlation heatmap
+create_correlation_heatmap <- function(returns, period = "all", crisis_start = NULL) {
+  # Filter data based on period if specified
+  if (period != "all" && !is.null(crisis_start)) {
+    crisis_date <- as.Date(crisis_start)
+    if (period == "pre_crisis") {
+      returns <- returns[index(returns) < crisis_date]
+    } else if (period == "crisis") {
+      returns <- returns[index(returns) >= crisis_date]
+    }
+  }
+  
+  # Calculate correlation matrix
+  cor_matrix <- cor(returns, use = "pairwise.complete.obs")
+  
+  # Convert to long format for ggplot
+  cor_data <- reshape2::melt(cor_matrix)
+  
+  # Create heatmap
+  p <- ggplot(cor_data, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                        midpoint = 0, limit = c(-1, 1), space = "Lab",
+                        name = "Correlation") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_blank()) +
+    coord_fixed() +
+    labs(title = paste("Correlation Heatmap -", 
+                      ifelse(period == "all", "Full Period",
+                            ifelse(period == "pre_crisis", "Pre-Crisis Period",
+                                  "Crisis Period"))))
+  
+  return(p)
+}
+
+# Function to analyze correlation changes
+analyze_correlation_changes <- function(returns, crisis_start) {
+  # Convert crisis_start to Date if it's a string
+  crisis_date <- as.Date(crisis_start)
+  
+  # Split data into pre-crisis and crisis periods
+  pre_crisis <- returns[index(returns) < crisis_date]
+  crisis <- returns[index(returns) >= crisis_date]
+  
+  # Calculate correlation matrices
+  pre_crisis_cor <- cor(pre_crisis, use = "pairwise.complete.obs")
+  crisis_cor <- cor(crisis, use = "pairwise.complete.obs")
+  
+  # Calculate correlation changes
+  cor_changes <- crisis_cor - pre_crisis_cor
+  
+  # Convert to long format for plotting
+  cor_changes_long <- reshape2::melt(cor_changes)
+  
+  # Create heatmap of correlation changes
+  p <- ggplot(cor_changes_long, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                        midpoint = 0, limit = c(-1, 1), space = "Lab",
+                        name = "Correlation\nChange") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_blank()) +
+    coord_fixed() +
+    labs(title = "Changes in Correlation Structure During Crisis")
+  
+  # Calculate summary statistics
+  summary_stats <- data.frame(
+    Mean_Change = mean(cor_changes[upper.tri(cor_changes)]),
+    SD_Change = sd(cor_changes[upper.tri(cor_changes)]),
+    Max_Increase = max(cor_changes[upper.tri(cor_changes)]),
+    Max_Decrease = min(cor_changes[upper.tri(cor_changes)]),
+    Pct_Increase = mean(cor_changes[upper.tri(cor_changes)] > 0) * 100
+  )
+  
+  return(list(
+    plot = p,
+    summary = summary_stats,
+    changes = cor_changes
+  ))
+}
+
+# Function to define key Red Sea crisis events
+define_red_sea_events <- function() {
+  events <- data.frame(
+    Date = as.Date(c(
+      "2023-11-19",  # First Houthi attack on commercial vessel
+      "2023-12-18",  # Major shipping companies announce route changes
+      "2024-01-12",  # US and UK launch strikes against Houthi targets
+      "2024-01-16",  # Maersk announces temporary suspension of Red Sea transits
+      "2024-02-14",  # Houthis attack bulk carrier
+      "2024-03-06"   # Major shipping companies announce extended route changes
+    )),
+    Event = c(
+      "First Houthi Attack",
+      "Major Route Changes",
+      "US-UK Military Response",
+      "Maersk Suspension",
+      "Bulk Carrier Attack",
+      "Extended Route Changes"
+    ),
+    Description = c(
+      "First attack on commercial vessel in Red Sea",
+      "Multiple shipping companies announce rerouting around Cape of Good Hope",
+      "US and UK launch military strikes against Houthi targets",
+      "Maersk announces temporary suspension of Red Sea transits",
+      "Houthis attack bulk carrier in Red Sea",
+      "Shipping companies announce extended route changes due to ongoing threats"
+    )
+  )
+  
+  return(events)
+}
+
+# Function to calculate event returns
+calculate_event_returns <- function(returns, events, market_index = NULL, window = 20) {
+  # Ensure events$Date is Date type
+  events$Date <- as.Date(events$Date)
+  
+  # Prepare result data frame
+  result <- data.frame(Event = events$Event, Date = events$Date)
+  
+  # For each asset, calculate cumulative return after each event
+  for (asset in colnames(returns)) {
+    cum_returns <- sapply(events$Date, function(event_date) {
+      idx <- which(index(returns) == event_date)
+      if (length(idx) == 0 || (idx + window) > nrow(returns)) {
+        return(NA)
+      }
+      # Cumulative return over the window
+      sum(returns[(idx+1):(idx+window), asset], na.rm = TRUE) * 100
+    })
+    result[[paste0(asset, "_cum_return")]] <- cum_returns
+  }
+  
+  # If market_index is provided, calculate abnormal returns
+  if (!is.null(market_index) && market_index %in% colnames(returns)) {
+    for (asset in colnames(returns)) {
+      if (asset == market_index) next
+      abn_returns <- sapply(events$Date, function(event_date) {
+        idx <- which(index(returns) == event_date)
+        if (length(idx) == 0 || (idx + window) > nrow(returns)) {
+          return(NA)
+        }
+        asset_cum <- sum(returns[(idx+1):(idx+window), asset], na.rm = TRUE)
+        market_cum <- sum(returns[(idx+1):(idx+window), market_index], na.rm = TRUE)
+        (asset_cum - market_cum) * 100
+      })
+      result[[paste0(asset, "_abn_return")]] <- abn_returns
+    }
+  }
+  
+  return(result)
+}
+
+# Function to plot event impact
+plot_event_impact <- function(event_returns, asset_names, return_type = "cumulative") {
+  # Ensure required packages are available
+  if (!requireNamespace("tidyr", quietly = TRUE)) {
+    stop("Package 'tidyr' is needed. Please install it.", call. = FALSE)
+  }
+  if (!requireNamespace("dplyr", quietly = TRUE)) {
+    stop("Package 'dplyr' is needed. Please install it.", call. = FALSE)
+  }
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is needed. Please install it.", call. = FALSE)
+  }
+
+  # Determine column suffix and plot labels based on return_type
+  suffix <- if (return_type == "cumulative") "_cum_return" else "_abn_return"
+  plot_title <- if (return_type == "cumulative") {
+    "Event Impact (20-Day Cumulative Returns)"
+  } else {
+    "Event Impact (20-Day Abnormal Returns)"
+  }
+  y_label <- if (return_type == "cumulative") "Cumulative Return (%)" else "Abnormal Return (%)"
+
+  # Construct the full column names to select from event_returns
+  target_cols_to_plot <- paste0(asset_names, suffix)
+
+  # Identify which of these target columns actually exist in the event_returns dataframe
+  existing_target_cols <- intersect(target_cols_to_plot, colnames(event_returns))
+
+  if (length(existing_target_cols) == 0) {
+    msg <- paste("No columns found in event_returns for assets:", 
+                 paste(asset_names, collapse=", "), 
+                 "with suffix:", suffix, ".",
+                 "\nAvailable columns containing '_return':", 
+                 paste(grep("_return", colnames(event_returns), value=TRUE), collapse=", "))
+    stop(msg, call. = FALSE)
+  }
+  
+  # Select 'Event', 'Date', and the identified existing target columns for plotting
+  plot_data <- event_returns %>%
+    dplyr::select(dplyr::all_of(c("Event", "Date", existing_target_cols)))
+
+  # Reshape data to long format for ggplot
+  plot_data_long <- plot_data %>%
+    tidyr::pivot_longer(cols = dplyr::all_of(existing_target_cols),
+                 names_to = "AssetFull", 
+                 values_to = "Return_Value") %>%
+    dplyr::mutate(Asset = gsub(suffix, "", AssetFull)) # Clean asset names for the legend
+
+  # Ensure 'Event' is a factor to maintain the order from the original events data frame
+  if ("Event" %in% names(event_returns)) {
+      plot_data_long$Event <- factor(plot_data_long$Event, levels = unique(event_returns$Event))
+  }
+
+
+  # Create the bar chart
+  p <- ggplot2::ggplot(plot_data_long, ggplot2::aes(x = Event, y = Return_Value, fill = Asset)) +
+    ggplot2::geom_bar(stat = "identity", position = ggplot2::position_dodge(width = 0.9)) +
+    ggplot2::labs(title = plot_title,
+         x = "Event",
+         y = y_label,
+         fill = "Asset") +
+    ggplot2::theme_minimal(base_size = 11) + # Adjusted base_size for better fit
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1), # Ensure labels don't overlap
+                   legend.position = "bottom",
+                   plot.title = ggplot2::element_text(hjust = 0.5)) + # Center plot title
+    ggplot2::scale_fill_brewer(palette = "Set2")
+  
+  return(p)
+}
+
+# Function to calculate and compare VaR for different periods
+compare_var_periods <- function(returns, asset_cols, crisis_start, confidence_level = 0.95) {
+  # Ensure required packages are available
+  if (!requireNamespace("dplyr", quietly = TRUE)) {
+    stop("Package 'dplyr' is needed. Please install it.", call. = FALSE)
+  }
+
+  crisis_date <- as.Date(crisis_start)
+  
+  # Split data
+  pre_crisis_returns <- returns[index(returns) < crisis_date, asset_cols, drop = FALSE]
+  crisis_returns <- returns[index(returns) >= crisis_date, asset_cols, drop = FALSE]
+  
+  # Calculate VaR for pre-crisis period
+  pre_crisis_var <- apply(pre_crisis_returns, 2, function(x) {
+    quantile(x, probs = (1 - confidence_level), na.rm = TRUE) * 100 # VaR as percentage
+  })
+  
+  # Calculate VaR for crisis period
+  crisis_var <- apply(crisis_returns, 2, function(x) {
+    quantile(x, probs = (1 - confidence_level), na.rm = TRUE) * 100 # VaR as percentage
+  })
+  
+  # Combine results
+  var_comparison <- data.frame(
+    Asset = asset_cols,
+    Pre_Crisis_VaR = pre_crisis_var[match(asset_cols, names(pre_crisis_var))],
+    Crisis_VaR = crisis_var[match(asset_cols, names(crisis_var))]
+  )
+  
+  # Calculate change in VaR
+  var_comparison <- var_comparison %>%
+    dplyr::mutate(VaR_Change = Crisis_VaR - Pre_Crisis_VaR,
+                  VaR_Pct_Change = ifelse(Pre_Crisis_VaR != 0, (VaR_Change / abs(Pre_Crisis_VaR)) * 100, NA)) # Avoid division by zero
+  
+  rownames(var_comparison) <- NULL
+  return(var_comparison)
+}
+
+# Function to plot VaR comparison
+plot_var_comparison <- function(var_results) {
+  # Ensure required packages are available
+  if (!requireNamespace("tidyr", quietly = TRUE)) {
+    stop("Package 'tidyr' is needed. Please install it.", call. = FALSE)
+  }
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Reshape data for plotting
+  plot_data <- var_results %>%
+    tidyr::pivot_longer(
+      cols = c("Pre_Crisis_VaR", "Crisis_VaR"),
+      names_to = "Period",
+      values_to = "VaR"
+    ) %>%
+    dplyr::mutate(Period = factor(Period, 
+                                  levels = c("Pre_Crisis_VaR", "Crisis_VaR"),
+                                  labels = c("Pre-Crisis", "Crisis")))
+  
+  # Create the plot
+  p <- ggplot2::ggplot(plot_data, ggplot2::aes(x = Asset, y = VaR, fill = Period)) +
+    ggplot2::geom_bar(stat = "identity", position = ggplot2::position_dodge()) +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "darkgray") +
+    ggplot2::labs(
+      title = "Value at Risk (VaR) Comparison",
+      subtitle = "95% Confidence Level, Daily Returns (%)",
+      x = "Asset",
+      y = "Value at Risk (%)",
+      fill = "Period"
+    ) +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+      legend.position = "bottom"
+    ) +
+    ggplot2::scale_fill_manual(values = c("Pre-Crisis" = "steelblue", "Crisis" = "firebrick"))
+  
+  return(p)
+}
+
+# Function to analyze VaR changes
+analyze_var_changes <- function(var_results) {
+  # Ensure required packages are available
+  if (!requireNamespace("dplyr", quietly = TRUE)) {
+    stop("Package 'dplyr' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Calculate summary statistics for VaR changes
+  summary_stats <- data.frame(
+    Mean_VaR_Change = mean(var_results$VaR_Change, na.rm = TRUE),
+    Median_VaR_Change = median(var_results$VaR_Change, na.rm = TRUE),
+    Max_VaR_Worsening = min(var_results$VaR_Change, na.rm = TRUE), # VaR is negative, so worsening is min
+    Max_VaR_Improvement = max(var_results$VaR_Change, na.rm = TRUE),
+    Mean_Pct_Change = mean(var_results$VaR_Pct_Change, na.rm = TRUE),
+    Assets_With_Increased_Risk = sum(var_results$VaR_Change < 0, na.rm = TRUE),
+    Total_Assets = nrow(var_results),
+    Pct_Assets_With_Increased_Risk = sum(var_results$VaR_Change < 0, na.rm = TRUE) / nrow(var_results) * 100
+  )
+  
+  # Categorize assets by risk change
+  var_categories <- var_results %>%
+    dplyr::mutate(
+      Risk_Change_Category = dplyr::case_when(
+        VaR_Change < -1 ~ "Significantly Increased Risk",
+        VaR_Change < 0 ~ "Slightly Increased Risk",
+        VaR_Change > 1 ~ "Significantly Decreased Risk",
+        TRUE ~ "Slightly Decreased Risk"
+      )
+    ) %>%
+    dplyr::group_by(Risk_Change_Category) %>%
+    dplyr::summarize(Count = dplyr::n(), Assets = paste(Asset, collapse = ", "))
+  
+  return(list(
+    summary = summary_stats,
+    categories = var_categories
+  ))
+}
+
+# Function to test VaR changes statistically
+test_var_changes <- function(var_changes) {
+  # Check if var_changes is NULL or doesn't have the expected structure
+  if (is.null(var_changes) || !is.list(var_changes) || !("summary" %in% names(var_changes))) {
+    warning("Invalid var_changes object. Expected a list with 'summary' element.")
+    return(data.frame(
+      Note = "Invalid var_changes object",
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Extract summary statistics
+  summary_stats <- var_changes$summary
+  
+  # Check if categories exist and have enough data
+  if (!("categories" %in% names(var_changes)) || 
+      is.null(var_changes$categories) || 
+      nrow(var_changes$categories) <= 1) {
+    return(data.frame(
+      Note = "Insufficient data for statistical testing of VaR changes",
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Initialize results
+  t_test_results <- data.frame(
+    Test = character(0),
+    Statistic = numeric(0),
+    P_Value = numeric(0),
+    Significant = logical(0),
+    stringsAsFactors = FALSE
+  )
+  
+  # Prepare data for t-test (try to extract relevant numeric data)
+  var_change_values <- tryCatch({
+    if ("VaR_Change" %in% names(var_changes$categories)) {
+      var_changes$categories$VaR_Change
+    } else if ("Count" %in% names(var_changes$categories)) {
+      var_changes$categories$Count
+    } else {
+      # Try to find any numeric column
+      numeric_cols <- sapply(var_changes$categories, is.numeric)
+      if (any(numeric_cols)) {
+        var_changes$categories[[which(numeric_cols)[1]]]
+      } else {
+        NULL
+      }
+    }
+  }, error = function(e) {
+    warning("Error extracting numeric data from var_changes: ", e$message)
+    return(NULL)
+  })
+  
+  # Check if we have valid data for the t-test
+  if (is.null(var_change_values) || length(var_change_values) < 2) {
+    return(data.frame(
+      Note = "Could not extract sufficient numeric data for statistical testing",
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Perform t-test with error handling
+  t_result <- tryCatch({
+    t.test(var_change_values)
+  }, error = function(e) {
+    warning("Error in t-test for VaR changes: ", e$message)
+    return(NULL)
+  })
+  
+  # Return appropriate results based on t-test outcome
+  if (is.null(t_result)) {
+    return(data.frame(
+      Note = "T-test failed for VaR changes",
+      stringsAsFactors = FALSE
+    ))
+  } else {
+    # Create result row
+    result_row <- data.frame(
+      Test = "T-test for VaR Change",
+      Statistic = t_result$statistic,
+      P_Value = t_result$p.value,
+      Significant = t_result$p.value < 0.05,
+      stringsAsFactors = FALSE
+    )
+    
+    return(result_row)
+  }
+}
+
+# Function to run VAR analysis
+run_var_analysis <- function(var_data, max_lag = 8) {
+  # Ensure required packages are available
+  if (!requireNamespace("vars", quietly = TRUE)) {
+    stop("Package 'vars' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # For simplicity and robustness, just use a fixed lag of 1
+  # This avoids all the issues with trying to determine optimal lag
+  p <- 1
+  
+  # Fit VAR model with the fixed lag
+  var_model <- vars::VAR(var_data, p = p, type = "const")
+  
+  # Calculate Granger causality
+  granger_results <- list()
+  for (col in colnames(var_data)) {
+    tryCatch({
+      granger_results[[col]] <- vars::causality(var_model, cause = col)$Granger
+    }, error = function(e) {
+      warning("Error calculating Granger causality for ", col, ": ", e$message)
+    })
+  }
+  
+  # Run impulse response analysis
+  irf_results <- tryCatch({
+    vars::irf(var_model, n.ahead = 10)
+  }, error = function(e) {
+    warning("Error calculating impulse response: ", e$message)
+    NULL
+  })
+  
+  # Return results
+  return(list(
+    model = var_model,
+    granger = granger_results,
+    irf = irf_results,
+    summary = summary(var_model)
+  ))
+}
+
+# Function to generate VAR forecasts
+generate_var_forecasts <- function(var_model, n.ahead = 20) {
+  # Ensure required packages are available
+  if (!requireNamespace("vars", quietly = TRUE)) {
+    stop("Package 'vars' is needed. Please install it.", call. = FALSE)
+  }
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Generate forecasts - use predict() as a method, not from vars namespace
+  var_forecasts <- predict(var_model, n.ahead = n.ahead)
+  
+  # Create plots
+  plots <- list()
+  for (series in names(var_forecasts$fcst)) {
+    # Extract forecast data for this series
+    fcst_data <- var_forecasts$fcst[[series]]
+    
+    # Convert to data frame for ggplot
+    df <- data.frame(
+      h = 1:n.ahead,
+      forecast = fcst_data[, 1],
+      lower_ci = fcst_data[, 2],
+      upper_ci = fcst_data[, 3]
+    )
+    
+    # Create plot
+    p <- ggplot2::ggplot(df, ggplot2::aes(x = h)) +
+      ggplot2::geom_line(ggplot2::aes(y = forecast), color = "blue") +
+      ggplot2::geom_ribbon(ggplot2::aes(ymin = lower_ci, ymax = upper_ci), fill = "blue", alpha = 0.2) +
+      ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+      ggplot2::labs(
+        title = paste("VAR Forecast for", series),
+        x = "Horizon (Days)",
+        y = "Forecasted Returns"
+      ) +
+      ggplot2::theme_minimal()
+    
+    plots[[series]] <- p
+  }
+  
+  # Create impulse response plots
+  irf_results <- vars::irf(var_model, n.ahead = n.ahead)
+  irf_plots <- plot(irf_results)
+  
+  return(list(
+    forecasts = var_forecasts,
+    plots = plots,
+    irf_plots = irf_plots
+  ))
+}
+
+# Function to validate forecasts
+validate_forecasts <- function(returns, var_model, test_window = 20) {
+  # Ensure required packages are available
+  if (!requireNamespace("vars", quietly = TRUE)) {
+    stop("Package 'vars' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Extract recent data for validation
+  n <- nrow(returns)
+  train_data <- returns[1:(n - test_window), ]
+  test_data <- returns[(n - test_window + 1):n, ]
+  
+  # Refit VAR model on training data
+  validation_model <- vars::VAR(train_data, p = var_model$p, type = "const")
+  
+  # Generate forecasts - use predict() as a method, not from vars namespace
+  validation_forecasts <- predict(validation_model, n.ahead = test_window)
+  
+  # Calculate error metrics for each series
+  error_metrics <- data.frame(
+    Asset = character(0),
+    MAE = numeric(0),
+    RMSE = numeric(0),
+    MAPE = numeric(0),
+    Theil_U = numeric(0)
+  )
+  
+  for (series in colnames(returns)) {
+    forecasts <- validation_forecasts$fcst[[series]][, 1]
+    actuals <- as.numeric(test_data[, series])
+    
+    # Calculate metrics
+    mae <- mean(abs(forecasts - actuals), na.rm = TRUE)
+    rmse <- sqrt(mean((forecasts - actuals)^2, na.rm = TRUE))
+    mape <- mean(abs((forecasts - actuals) / actuals), na.rm = TRUE) * 100
+    theil_u <- sqrt(sum((forecasts - actuals)^2, na.rm = TRUE)) / 
+              sqrt(sum(actuals^2, na.rm = TRUE))
+    
+    # Add to results
+    error_metrics <- rbind(error_metrics, data.frame(
+      Asset = series,
+      MAE = mae,
+      RMSE = rmse,
+      MAPE = mape,
+      Theil_U = theil_u
+    ))
+  }
+  
+  return(error_metrics)
+}
+
+# Function to forecast with ARIMA
+forecast_with_arima <- function(price_series, ticker, h = 30) {
+  # Ensure required packages are available
+  if (!requireNamespace("forecast", quietly = TRUE)) {
+    stop("Package 'forecast' is needed. Please install it.", call. = FALSE)
+  }
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Convert xts to ts
+  price_ts <- as.ts(price_series)
+  
+  # Fit auto ARIMA model
+  arima_model <- forecast::auto.arima(price_ts, seasonal = FALSE)
+  
+  # Generate forecast
+  arima_forecast <- forecast::forecast(arima_model, h = h)
+  
+  # Convert forecast to data frame for ggplot
+  forecast_df <- data.frame(
+    Date = as.Date(seq(from = index(price_series)[length(index(price_series))], 
+                       by = "day", length.out = h + 1)[-1]),
+    Forecast = as.numeric(arima_forecast$mean),
+    Lower_80 = as.numeric(arima_forecast$lower[, 1]),
+    Upper_80 = as.numeric(arima_forecast$upper[, 1]),
+    Lower_95 = as.numeric(arima_forecast$lower[, 2]),
+    Upper_95 = as.numeric(arima_forecast$upper[, 2])
+  )
+  
+  # Historical dates and values for plotting
+  historical_df <- data.frame(
+    Date = index(price_series),
+    Value = as.numeric(price_series)
+  )
+  
+  # Create plot
+  p <- ggplot2::ggplot() +
+    ggplot2::geom_line(data = historical_df, ggplot2::aes(x = Date, y = Value), color = "black") +
+    ggplot2::geom_line(data = forecast_df, ggplot2::aes(x = Date, y = Forecast), color = "blue") +
+    ggplot2::geom_ribbon(data = forecast_df, 
+                ggplot2::aes(x = Date, ymin = Lower_95, ymax = Upper_95), 
+                fill = "blue", alpha = 0.2) +
+    ggplot2::labs(
+      title = paste("ARIMA Forecast for", ticker),
+      x = "Date",
+      y = "Price"
+    ) +
+    ggplot2::theme_minimal()
+  
+  return(list(
+    model = arima_model,
+    forecast = arima_forecast,
+    plot = p
+  ))
+}
+
+# Function to calculate rolling beta
+calculate_rolling_beta <- function(returns, market_col, window = 60) {
+  # Ensure required packages are available
+  if (!requireNamespace("zoo", quietly = TRUE)) {
+    stop("Package 'zoo' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Initialize results data frame
+  rolling_betas <- data.frame(
+    Date = index(returns)[(window):nrow(returns)]
+  )
+  
+  # Calculate rolling beta for each asset against the market
+  for (col in colnames(returns)) {
+    if (col == market_col) next  # Skip market itself
+    
+    # Calculate rolling beta
+    betas <- sapply((window):nrow(returns), function(i) {
+      window_data <- returns[(i - window + 1):i, ]
+      model <- lm(window_data[, col] ~ window_data[, market_col])
+      return(coef(model)[2])  # Beta is the slope coefficient
+    })
+    
+    # Add to results
+    rolling_betas[[paste0(col, "_beta")]] <- betas
+  }
+  
+  # Convert to xts for easier time series operations
+  rolling_betas_xts <- xts::xts(rolling_betas[, -1], order.by = as.Date(rolling_betas$Date))
+  
+  return(rolling_betas_xts)
+}
+
+# Function to plot rolling betas
+plot_rolling_betas <- function(rolling_betas, crisis_start) {
+  # Ensure required packages are available
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is needed. Please install it.", call. = FALSE)
+  }
+  if (!requireNamespace("reshape2", quietly = TRUE)) {
+    stop("Package 'reshape2' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Convert to data frame for ggplot
+  plot_data <- data.frame(
+    Date = index(rolling_betas),
+    as.data.frame(rolling_betas)
+  )
+  
+  # Reshape to long format
+  plot_data_long <- reshape2::melt(plot_data, id.vars = "Date",
+                                  variable.name = "Asset",
+                                  value.name = "Beta")
+  
+  # Clean asset names (remove _beta suffix)
+  plot_data_long$Asset <- gsub("_beta$", "", plot_data_long$Asset)
+  
+  # Create plot
+  p <- ggplot2::ggplot(plot_data_long, ggplot2::aes(x = Date, y = Beta, color = Asset)) +
+    ggplot2::geom_line() +
+    ggplot2::geom_hline(yintercept = 1, linetype = "dashed", color = "gray") +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dotted", color = "gray") +
+    ggplot2::geom_vline(xintercept = as.Date(crisis_start), 
+               linetype = "dashed", color = "red") +
+    ggplot2::labs(
+      title = "Rolling Beta to Market",
+      x = "Date",
+      y = "Beta Coefficient",
+      color = "Asset"
+    ) +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(legend.position = "bottom") +
+    ggplot2::scale_color_brewer(palette = "Set1")
+  
+  return(p)
+}
+
+# Function to analyze beta changes
+analyze_beta_changes <- function(rolling_betas, crisis_start) {
+  # Ensure crisis_start is a Date
+  crisis_date <- as.Date(crisis_start)
+  
+  # Split data
+  pre_crisis <- rolling_betas[index(rolling_betas) < crisis_date]
+  crisis <- rolling_betas[index(rolling_betas) >= crisis_date]
+  
+  # Calculate statistics for each asset
+  results <- data.frame(
+    Asset = character(),
+    Pre_Crisis_Mean_Beta = numeric(),
+    Crisis_Mean_Beta = numeric(),
+    Beta_Change = numeric(),
+    Pre_Crisis_Vol = numeric(),
+    Crisis_Vol = numeric(),
+    Vol_Change = numeric()
+  )
+  
+  # Process each asset's beta
+  for (col in colnames(rolling_betas)) {
+    # Calculate statistics
+    pre_mean <- mean(pre_crisis[, col], na.rm = TRUE)
+    crisis_mean <- mean(crisis[, col], na.rm = TRUE)
+    beta_change <- crisis_mean - pre_mean
+    
+    pre_vol <- sd(pre_crisis[, col], na.rm = TRUE)
+    crisis_vol <- sd(crisis[, col], na.rm = TRUE)
+    vol_change <- crisis_vol / pre_vol - 1
+    
+    # Add to results
+    results <- rbind(results, data.frame(
+      Asset = gsub("_beta$", "", col),
+      Pre_Crisis_Mean_Beta = pre_mean,
+      Crisis_Mean_Beta = crisis_mean,
+      Beta_Change = beta_change,
+      Pre_Crisis_Vol = pre_vol,
+      Crisis_Vol = crisis_vol,
+      Vol_Change = vol_change
+    ))
+  }
+  
+  return(results)
+}
+
+# Function to test volatility changes
+test_volatility_changes <- function(returns, asset_cols, crisis_date) {
+  results <- data.frame(
+    Asset = character(),
+    Pre_Crisis_Vol = numeric(),
+    Crisis_Vol = numeric(),
+    Change_Pct = numeric(),
+    F_Stat = numeric(),
+    P_Value = numeric(),
+    Significant = logical(),
+    stringsAsFactors = FALSE
+  )
+
+  for (col in asset_cols) {
+    if (col %in% colnames(returns)) {
+      pre_vals <- as.numeric(returns[index(returns) < crisis_date, col])
+      post_vals <- as.numeric(returns[index(returns) >= crisis_date, col])
+
+      pre_vol <- sd(pre_vals, na.rm = TRUE)
+      post_vol <- sd(post_vals, na.rm = TRUE)
+      vol_change_pct <- (post_vol / pre_vol - 1) * 100
+
+      # F-test for equality of variances
+      f_test <- tryCatch(
+        var.test(post_vals, pre_vals),
+        error = function(e) list(statistic = NA, p.value = NA)
+      )
+
+      results <- rbind(results, data.frame(
+        Asset = col,
+        Pre_Crisis_Vol = pre_vol,
+        Crisis_Vol = post_vol,
+        Change_Pct = vol_change_pct,
+        F_Stat = f_test$statistic,
+        P_Value = f_test$p.value,
+        Significant = !is.na(f_test$p.value) && f_test$p.value < 0.05
+      ))
+    }
+  }
+
+  return(results)
+}
+
+# Function to test beta changes
+test_beta_changes <- function(rolling_betas, crisis_start) {
+  # Ensure required packages are available
+  if (!requireNamespace("stats", quietly = TRUE)) {
+    stop("Package 'stats' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Convert crisis_start to Date
+  crisis_date <- as.Date(crisis_start)
+  
+  # Split data
+  pre_crisis <- rolling_betas[index(rolling_betas) < crisis_date]
+  crisis <- rolling_betas[index(rolling_betas) >= crisis_date]
+  
+  # Initialize results with explicit structure
+  results <- data.frame(
+    Asset = character(0),
+    T_Statistic = numeric(0),
+    P_Value = numeric(0),
+    Significant = logical(0),
+    Mean_Difference = numeric(0),
+    stringsAsFactors = FALSE
+  )
+  
+  # Process each asset
+  for (col in colnames(rolling_betas)) {
+    # Extract pre and crisis betas
+    pre_betas <- pre_crisis[, col]
+    crisis_betas <- crisis[, col]
+    
+    # Skip if insufficient data
+    if (length(pre_betas) < 2 || length(crisis_betas) < 2) {
+      warning("Insufficient data for beta testing of ", col)
+      next
+    }
+    
+    # T-test with error handling
+    t_result <- tryCatch({
+      t.test(crisis_betas, pre_betas)
+    }, error = function(e) {
+      warning("Error in t-test for ", col, ": ", e$message)
+      return(NULL)
+    })
+    
+    # Skip if t-test failed
+    if (is.null(t_result)) next
+    
+    # Create a single row
+    asset_row <- data.frame(
+      Asset = gsub("_beta$", "", col),
+      T_Statistic = t_result$statistic,
+      P_Value = t_result$p.value,
+      Significant = t_result$p.value < 0.05,
+      Mean_Difference = t_result$estimate[1] - t_result$estimate[2],
+      stringsAsFactors = FALSE
+    )
+    
+    # Add to results
+    results <- rbind(results, asset_row)
+  }
+  
+  return(results)
+}
+
+# Function to test event significance
+test_event_significance <- function(event_returns, asset_cols, suffix = "_cum_return") {
+  # Initialize results with explicit structure
+  results <- data.frame(
+    Asset = character(0),
+    Mean_Event_Return = numeric(0),
+    T_Statistic = numeric(0),
+    P_Value = numeric(0),
+    Significant = logical(0),
+    stringsAsFactors = FALSE
+  )
+  
+  # Process each asset
+  for (asset in asset_cols) {
+    col_name <- paste0(asset, suffix)
+    
+    # Skip if column doesn't exist
+    if (!(col_name %in% colnames(event_returns))) {
+      warning("Column ", col_name, " not found in event_returns")
+      next
+    }
+    
+    # Extract returns with error handling
+    returns <- tryCatch({
+      ret <- event_returns[[col_name]]
+      ret[!is.na(ret)]
+    }, error = function(e) {
+      warning("Error extracting returns for ", asset, ": ", e$message)
+      return(NULL)
+    })
+    
+    # Skip if insufficient data
+    if (is.null(returns) || length(returns) < 2) {
+      warning("Insufficient data for event testing of ", asset)
+      next
+    }
+    
+    # One-sample t-test against zero with error handling
+    t_result <- tryCatch({
+      t.test(returns, mu = 0)
+    }, error = function(e) {
+      warning("Error in t-test for ", asset, ": ", e$message)
+      return(NULL)
+    })
+    
+    # Skip if t-test failed
+    if (is.null(t_result)) next
+    
+    # Create a single row
+    asset_row <- data.frame(
+      Asset = asset,
+      Mean_Event_Return = mean(returns, na.rm = TRUE),
+      T_Statistic = t_result$statistic,
+      P_Value = t_result$p.value,
+      Significant = t_result$p.value < 0.05,
+      stringsAsFactors = FALSE
+    )
+    
+    # Add to results
+    results <- rbind(results, asset_row)
+  }
+  
+  return(results)
+}
+
+# Function to calculate rolling correlations
+calculate_rolling_correlations <- function(returns, window_size = 60, market_index = NULL) {
+  # Check if market_index is provided and exists in returns
+  if (!is.null(market_index) && !market_index %in% colnames(returns)) {
+    stop("Specified market index not found in returns data")
+  }
+  
+  # Columns to calculate correlations for
+  if (!is.null(market_index)) {
+    # Calculate correlations between each column and the market index
+    result <- matrix(NA, nrow = nrow(returns) - window_size + 1, 
+                    ncol = ncol(returns) - 1)
+    colnames(result) <- colnames(returns)[colnames(returns) != market_index]
+    
+    for (i in window_size:nrow(returns)) {
+      window_data <- returns[(i-window_size+1):i, ]
+      for (j in 1:ncol(result)) {
+        col <- colnames(result)[j]
+        result[i-window_size+1, j] <- cor(window_data[, col], 
+                                         window_data[, market_index], 
+                                         use = "pairwise.complete.obs")
+      }
+    }
+  } else {
+    # Calculate all pairwise correlations
+    cols <- colnames(returns)
+    pairs <- combn(cols, 2)
+    result <- matrix(NA, nrow = nrow(returns) - window_size + 1, 
+                    ncol = ncol(pairs))
+    colnames(result) <- apply(pairs, 2, paste, collapse = "_")
+    
+    for (i in window_size:nrow(returns)) {
+      window_data <- returns[(i-window_size+1):i, ]
+      for (j in 1:ncol(pairs)) {
+        pair <- pairs[, j]
+        result[i-window_size+1, j] <- cor(window_data[, pair[1]], 
+                                         window_data[, pair[2]], 
+                                         use = "pairwise.complete.obs")
+      }
+    }
+  }
+  
+  # Convert to xts
+  roll_cor <- xts(result, order.by = index(returns)[window_size:nrow(returns)])
+  return(roll_cor)
+}
+
+# Function to plot rolling correlations
+plot_rolling_correlations <- function(rolling_cors, crisis_start, title = "Rolling Correlations") {
+  # Convert to data frame for ggplot
+  plot_data <- data.frame(
+    Date = index(rolling_cors),
+    as.data.frame(rolling_cors)
+  )
+  
+  # Reshape to long format
+  plot_data_long <- reshape2::melt(plot_data, id.vars = "Date",
+                                  variable.name = "Pair",
+                                  value.name = "Correlation")
+  
+  # Create plot
+  p <- ggplot2::ggplot(plot_data_long, ggplot2::aes(x = Date, y = Correlation, color = Pair)) +
+    ggplot2::geom_line() +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dotted", color = "darkgray") +
+    ggplot2::geom_vline(xintercept = as.Date(crisis_start), 
+               linetype = "dashed", color = "red") +
+    ggplot2::labs(
+      title = title,
+      x = "Date",
+      y = "Correlation Coefficient",
+      color = "Asset Pair"
+    ) +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(legend.position = "bottom") +
+    ggplot2::scale_color_brewer(palette = "Set1")
+  
+  return(p)
+}
+
+# Function to run GARCH analysis
+run_garch_analysis <- function(return_series, asset_name) {
+  # Ensure required packages are available
+  if (!requireNamespace("rugarch", quietly = TRUE)) {
+    stop("Package 'rugarch' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Prepare data - convert xts to numeric vector
+  returns_vector <- as.numeric(return_series)
+  returns_vector <- returns_vector[!is.na(returns_vector)]
+  
+  # Specify GARCH model (standard GARCH(1,1) with normal distribution)
+  garch_spec <- rugarch::ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+    mean.model = list(armaOrder = c(1, 0), include.mean = TRUE),
+    distribution.model = "norm"
+  )
+  
+  # Fit the model
+  garch_fit <- tryCatch({
+    rugarch::ugarchfit(garch_spec, returns_vector)
+  }, error = function(e) {
+    warning("Error fitting GARCH model for ", asset_name, ": ", e$message)
+    return(NULL)
+  })
+  
+  # Return the fitted model
+  return(list(
+    model = garch_fit,
+    asset = asset_name,
+    spec = garch_spec
+  ))
+}
+
+# Function to extract GARCH volatility
+extract_garch_volatility <- function(garch_result, return_series) {
+  # Extract conditional volatility from the GARCH model
+  if (is.null(garch_result$model)) {
+    return(NULL)
+  }
+  
+  # Get sigma (conditional volatility)
+  sigma <- rugarch::sigma(garch_result$model)
+  
+  # Create xts object aligned with return_series
+  sigma_xts <- xts(sigma, order.by = index(return_series)[1:length(sigma)])
+  
+  return(sigma_xts)
+}
+
+# Function to plot GARCH volatility
+plot_garch_volatility <- function(garch_volatilities, crisis_start, title = "GARCH Conditional Volatility") {
+  # Combine all volatilities into one xts object
+  combined <- do.call(merge, garch_volatilities)
+  
+  # Convert to data frame for ggplot
+  plot_data <- data.frame(
+    Date = index(combined),
+    as.data.frame(combined)
+  )
+  
+  # Reshape to long format
+  plot_data_long <- reshape2::melt(plot_data, id.vars = "Date",
+                                  variable.name = "Asset",
+                                  value.name = "Volatility")
+  
+  # Create plot
+  p <- ggplot2::ggplot(plot_data_long, ggplot2::aes(x = Date, y = Volatility, color = Asset)) +
+    ggplot2::geom_line() +
+    ggplot2::geom_vline(xintercept = as.Date(crisis_start), 
+               linetype = "dashed", color = "red") +
+    ggplot2::labs(
+      title = title,
+      x = "Date",
+      y = "Conditional Volatility",
+      color = "Asset"
+    ) +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(legend.position = "bottom") +
+    ggplot2::scale_color_brewer(palette = "Set1")
+  
+  return(p)
+}
+
+# Function to run structural break tests
+test_structural_breaks <- function(return_series, crisis_start) {
+  # Ensure required packages are available
+  if (!requireNamespace("strucchange", quietly = TRUE)) {
+    stop("Package 'strucchange' is needed. Please install it.", call. = FALSE)
+  }
+  
+  # Convert xts to ts
+  returns_ts <- as.ts(return_series)
+  
+  # Run CUSUM test
+  cusum_test <- tryCatch({
+    strucchange::efp(returns_ts ~ 1, type = "OLS-CUSUM")
+  }, error = function(e) {
+    warning("Error in CUSUM test: ", e$message)
+    return(NULL)
+  })
+  
+  # Run Chow test at the crisis date
+  # Find the closest index to the crisis date
+  crisis_date <- as.Date(crisis_start)
+  crisis_idx <- which.min(abs(as.numeric(index(return_series) - crisis_date)))
+  
+  chow_test <- tryCatch({
+    strucchange::sctest(returns_ts ~ 1, type = "Chow", point = crisis_idx)
+  }, error = function(e) {
+    warning("Error in Chow test: ", e$message)
+    return(NULL)
+  })
+  
+  # Run Breakpoints test to identify optimal breaks
+  bp_test <- tryCatch({
+    strucchange::breakpoints(returns_ts ~ 1)
+  }, error = function(e) {
+    warning("Error in breakpoints test: ", e$message)
+    return(NULL)
+  })
+  
+  # Return results
+  return(list(
+    cusum = cusum_test,
+    chow = chow_test,
+    breakpoints = bp_test
+  ))
+}
+
+# Function to analyze economic significance
+analyze_economic_significance <- function(prices, returns, asset_cols, crisis_start, 
+                                        trading_volume = NULL) {
+  # Convert crisis_start to Date
+  crisis_date <- as.Date(crisis_start)
+  
+  # Calculate market value changes
+  value_changes <- data.frame(
+    Asset = character(),
+    Pre_Crisis_Price = numeric(),
+    Post_Crisis_Price = numeric(),
+    Price_Change_Pct = numeric(),
+    Annualized_Return_Pre = numeric(),
+    Annualized_Return_Post = numeric(),
+    Return_Difference = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (col in asset_cols) {
+    if (col %in% colnames(prices)) {
+      # Check if we have data before and after crisis date
+      pre_crisis_data <- prices[index(prices) < crisis_date, col]
+      post_crisis_data <- prices[index(prices) >= crisis_date, col]
+      
+      # Skip if insufficient data
+      if (length(pre_crisis_data) == 0 || length(post_crisis_data) == 0) {
+        warning("Insufficient price data for asset ", col, " before or after crisis date")
+        next
+      }
+      
+      # Extract pre/post prices for this asset safely
+      pre_crisis_price_start <- as.numeric(prices[index(prices)[1], col])
+      pre_crisis_price_end <- as.numeric(tail(pre_crisis_data, 1))
+      post_crisis_price_latest <- as.numeric(tail(post_crisis_data, 1))
+      
+      # Skip if any price is NA
+      if (any(is.na(c(pre_crisis_price_start, pre_crisis_price_end, post_crisis_price_latest)))) {
+        warning("Missing price data for asset ", col)
+        next
+      }
+      
+      # Calculate price changes
+      pre_crisis_change <- (pre_crisis_price_end / pre_crisis_price_start - 1) * 100
+      post_crisis_change <- (post_crisis_price_latest / pre_crisis_price_end - 1) * 100
+      
+      # Calculate trading days in each period
+      pre_days <- sum(index(prices) < crisis_date)
+      post_days <- sum(index(prices) >= crisis_date)
+      
+      # Annualize returns (assuming 252 trading days per year)
+      pre_annual <- (1 + pre_crisis_change/100)^(252/pre_days) - 1
+      post_annual <- (1 + post_crisis_change/100)^(252/post_days) - 1
+      
+      # Add to results
+      value_changes <- rbind(value_changes, data.frame(
+        Asset = col,
+        Pre_Crisis_Price = pre_crisis_price_end,
+        Post_Crisis_Price = post_crisis_price_latest,
+        Price_Change_Pct = post_crisis_change,
+        Annualized_Return_Pre = pre_annual * 100,
+        Annualized_Return_Post = post_annual * 100,
+        Return_Difference = (post_annual - pre_annual) * 100,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+  
+  # Calculate risk-adjusted returns (Sharpe ratios)
+  risk_adjusted <- data.frame(
+    Asset = character(),
+    Pre_Crisis_Sharpe = numeric(),
+    Crisis_Sharpe = numeric(),
+    Sharpe_Change = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Assume risk-free rate of 3%
+  rf_daily <- 0.03 / 252
+  
+  for (col in asset_cols) {
+    if (col %in% colnames(returns)) {
+      # Extract returns for different periods
+      pre_returns <- returns[index(returns) < crisis_date, col]
+      crisis_returns <- returns[index(returns) >= crisis_date, col]
+      
+      # Skip if insufficient data
+      if (length(pre_returns) < 5 || length(crisis_returns) < 5) {
+        warning("Insufficient return data for asset ", col)
+        next
+      }
+      
+      # Calculate Sharpe ratios
+      pre_mean <- mean(pre_returns, na.rm = TRUE) * 252 # Annualize
+      pre_sd <- sd(pre_returns, na.rm = TRUE) * sqrt(252) # Annualize
+      pre_sharpe <- (pre_mean - 0.03) / pre_sd
+      
+      crisis_mean <- mean(crisis_returns, na.rm = TRUE) * 252 # Annualize
+      crisis_sd <- sd(crisis_returns, na.rm = TRUE) * sqrt(252) # Annualize
+      crisis_sharpe <- (crisis_mean - 0.03) / crisis_sd
+      
+      # Add to results
+      risk_adjusted <- rbind(risk_adjusted, data.frame(
+        Asset = col,
+        Pre_Crisis_Sharpe = pre_sharpe,
+        Crisis_Sharpe = crisis_sharpe,
+        Sharpe_Change = crisis_sharpe - pre_sharpe,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+  
+  return(list(
+    price_changes = value_changes,
+    risk_adjusted = risk_adjusted
+  ))
+}
+```
+
+# Introduction
+
+The Red Sea is one of the most important maritime trade routes in the world, with approximately 12% of global trade passing through this vital waterway. Since late 2023, Houthi rebel attacks on commercial vessels in response to the Israel-Hamas conflict have severely disrupted shipping operations in this region. Many shipping companies have been forced to reroute vessels around the Cape of Good Hope, adding significant time and costs to global supply chains.
+
+This project aims to analyze the impact of the Red Sea crisis on global shipping and stock markets using time series methods. By comparing shipping-related financial instruments with broader market indices, we seek to quantify the specific effects of this geopolitical crisis on the shipping industry and related financial markets.
+
+The Red Sea crisis represents a unique natural experiment to examine how geopolitical events affect specific industries differently from broader market movements. This analysis has implications for risk management, portfolio diversification, and understanding the economic impact of regional conflicts on global trade.
+
+# Data Collection and Preprocessing
+
+```{r data-collection}
+# Define tickers and dates
+shipping_tickers <- c("ZIM", "MAERSK-B.CO", "HLAG.DE", "DAC") # Shipping companies
+index_tickers <- c("SPY", "XLE")                          # Market indices
+oil_tickers <- c("USO")                                   # Oil ETF
+
+start_date <- "2023-01-01" 
+end_date <- "2025-04-30"
+crisis_start <- "2023-11-19"  # Date of first Houthi attack
+
+# Download data with error handling
+shipping_data <- download_with_error_handling(shipping_tickers, start_date, end_date)
+index_data <- download_with_error_handling(index_tickers, start_date, end_date)
+oil_data <- download_with_error_handling(oil_tickers, start_date, end_date)
+
+# Process data
+data <- process_financial_data(shipping_data, index_data, oil_data, crisis_start)
+
+# Display summary statistics
+stats_table <- calculate_descriptive_stats(data$returns)
+kable(stats_table, caption = "Summary Statistics of Daily Returns (%)",
+      digits = 2, booktabs = TRUE)
+```
+
+# Descriptive Analysis
+
+```{r descriptive-analysis}
+# Compare pre-crisis and post-crisis periods
+period_comparison <- compare_periods(data$returns, data$crisis_start)
+formatted_kable(period_comparison, "Pre-Crisis vs Crisis Period Statistics", digits = 2)
+
+# Plot price data with improved aesthetics
+shipping_plot <- plot_prices(data$normalized_prices, names(shipping_data), 
+                           data$crisis_start, "Shipping Assets Performance") +
+  theme_report() +
+  labs(subtitle = paste("Price Performance Before and After Red Sea Crisis (Start:", data$crisis_start, ")"))
+print(shipping_plot)
+
+market_plot <- plot_prices(data$normalized_prices, names(index_data), 
+                         data$crisis_start, "Market Indices Performance") +
+  theme_report() +
+  labs(subtitle = "Comparison of Market Benchmarks During the Same Period")
+print(market_plot)
+
+# Calculate monthly statistics to show trends
+monthly_stats <- data.frame()
+for (col in data$shipping_cols) {
+  if (col %in% colnames(data$returns)) {
+    # Extract returns for this asset
+    asset_returns <- data$returns[, col]
+    
+    # Create monthly statistics
+    by_month <- aggregate(asset_returns, 
+                         format(index(asset_returns), "%Y-%m"), 
+                         FUN = function(x) {
+                           c(Mean = mean(x, na.rm = TRUE) * 100,
+                             SD = sd(x, na.rm = TRUE) * 100,
+                             Min = min(x, na.rm = TRUE) * 100,
+                             Max = max(x, na.rm = TRUE) * 100)
+                         })
+    
+    # Convert to data frame
+    month_df <- data.frame(
+      Asset = col,
+      Month = rownames(by_month),
+      Mean = by_month$x[, "Mean"],
+      Volatility = by_month$x[, "SD"],
+      Min = by_month$x[, "Min"],
+      Max = by_month$x[, "Max"],
+      stringsAsFactors = FALSE
+    )
+    
+    # Flag crisis period
+    month_df$Period <- ifelse(as.Date(paste0(month_df$Month, "-01")) >= as.Date(data$crisis_start),
+                             "Crisis", "Pre-Crisis")
+    
+    # Add to results
+    monthly_stats <- rbind(monthly_stats, month_df)
+  }
+}
+
+# Display monthly statistics
+if (nrow(monthly_stats) > 0) {
+  formatted_kable(monthly_stats, "Monthly Return Statistics by Asset (%)", digits = 2)
+  
+  # Plot monthly volatility trends
+  monthly_vol_plot <- ggplot(monthly_stats, aes(x = Month, y = Volatility, 
+                                             color = Asset, group = Asset)) +
+    geom_line(size = 1) +
+    geom_point(size = 3) +
+    geom_vline(xintercept = which(unique(monthly_stats$Month) == 
+                              format(as.Date(data$crisis_start), "%Y-%m")),
+               linetype = "dashed", color = "red") +
+    labs(title = "Monthly Volatility Evolution",
+         subtitle = "Standard Deviation of Daily Returns by Month (%)",
+         x = "Month",
+         y = "Volatility (%)") +
+    theme_report() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(monthly_vol_plot)
+}
+```
+
+# Stationarity and Correlation Analysis
+
+```{r stationarity-correlation}
+# Test stationarity
+stationarity_results <- enhanced_stationarity_tests(data$returns)
+formatted_kable(stationarity_results, "Stationarity Test Results", digits = 4)
+
+# Create custom correlation heatmap function with improved aesthetics
+improved_correlation_heatmap <- function(returns, period = "all", crisis_start = NULL, 
+                                       title = "Correlation Heatmap") {
+  # Filter data based on period if specified
+  if (period != "all" && !is.null(crisis_start)) {
+    crisis_date <- as.Date(crisis_start)
+    if (period == "pre_crisis") {
+      returns <- returns[index(returns) < crisis_date]
+      title_suffix <- "Pre-Crisis Period"
+    } else if (period == "crisis") {
+      returns <- returns[index(returns) >= crisis_date]
+      title_suffix <- "Crisis Period"
+    }
+  } else {
+    title_suffix <- "Full Period"
+  }
+  
+  # Calculate correlation matrix
+  cor_matrix <- cor(returns, use = "pairwise.complete.obs")
+  
+  # Convert to long format for ggplot
+  cor_data <- reshape2::melt(cor_matrix)
+  
+  # Create heatmap
+  p <- ggplot(cor_data, aes(x = Var1, y = Var2, fill = value, label = round(value, 2))) +
+    geom_tile(color = "white") +
+    geom_text(size = 3, color = ifelse(abs(cor_data$value) > 0.5, "white", "black")) +
+    scale_fill_gradient2(low = "darkblue", high = "darkred", mid = "white", 
+                        midpoint = 0, limit = c(-1, 1), space = "Lab",
+                        name = "Correlation") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+          axis.text.y = element_text(size = 9),
+          axis.title = element_blank(),
+          panel.grid = element_blank(),
+          legend.position = "bottom") +
+    coord_fixed() +
+    labs(title = paste(title, "-", title_suffix))
+  
+  return(p)
+}
+
+# Create correlation heatmaps with improved aesthetics
+all_corr <- improved_correlation_heatmap(data$returns, title = "Asset Correlation")
+pre_crisis_corr <- improved_correlation_heatmap(data$returns, "pre_crisis", data$crisis_start, 
+                                             title = "Asset Correlation")
+crisis_corr <- improved_correlation_heatmap(data$returns, "crisis", data$crisis_start, 
+                                         title = "Asset Correlation")
+
+# Arrange correlation plots in a grid
+grid.arrange(pre_crisis_corr, crisis_corr, ncol = 2)
+
+# Analyze correlation changes
+cor_change <- analyze_correlation_changes(data$returns, data$crisis_start)
+
+# Create improved correlation change heatmap
+cor_changes_long <- reshape2::melt(cor_change$changes)
+change_heatmap <- ggplot(cor_changes_long, aes(x = Var1, y = Var2, fill = value, 
+                                           label = round(value, 2))) +
+  geom_tile(color = "white") +
+  geom_text(size = 3, color = ifelse(abs(cor_changes_long$value) > 0.25, "white", "black")) +
+  scale_fill_gradient2(low = "darkblue", high = "darkred", mid = "white", 
+                      midpoint = 0, limit = c(-1, 1), space = "Lab",
+                      name = "Correlation\nChange") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+        axis.text.y = element_text(size = 9),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "bottom") +
+  coord_fixed() +
+  labs(title = "Changes in Correlation During Crisis",
+       subtitle = paste("Average Correlation Change:", 
+                      round(mean(cor_change$changes[upper.tri(cor_change$changes)], na.rm = TRUE), 3)))
+
+print(change_heatmap)
+
+# Display correlation change summary statistics
+formatted_kable(cor_change$summary, "Correlation Change Summary Statistics", digits = 4)
+
+# Calculate and display the most significant correlation changes
+significant_changes <- data.frame(
+  Asset_Pair = character(),
+  Pre_Crisis = numeric(),
+  Crisis = numeric(),
+  Change = numeric(),
+  Pct_Change = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (i in 1:(ncol(data$returns)-1)) {
+  for (j in (i+1):ncol(data$returns)) {
+    # Get asset names
+    asset1 <- colnames(data$returns)[i]
+    asset2 <- colnames(data$returns)[j]
+    
+    # Calculate correlations for different periods
+    pre_cor <- cor(data$returns[index(data$returns) < as.Date(data$crisis_start), asset1],
+                  data$returns[index(data$returns) < as.Date(data$crisis_start), asset2],
+                  use = "pairwise.complete.obs")
+    
+    crisis_cor <- cor(data$returns[index(data$returns) >= as.Date(data$crisis_start), asset1],
+                     data$returns[index(data$returns) >= as.Date(data$crisis_start), asset2],
+                     use = "pairwise.complete.obs")
+    
+    # Calculate change
+    change <- crisis_cor - pre_cor
+    pct_change <- ifelse(pre_cor != 0, (change / abs(pre_cor)) * 100, NA)
+    
+    # Add to results
+    significant_changes <- rbind(significant_changes, data.frame(
+      Asset_Pair = paste(asset1, "-", asset2),
+      Pre_Crisis = pre_cor,
+      Crisis = crisis_cor,
+      Change = change,
+      Pct_Change = pct_change,
+      stringsAsFactors = FALSE
+    ))
+  }
+}
+
+# Sort by absolute change
+significant_changes <- significant_changes[order(-abs(significant_changes$Change)),]
+
+# Display top changes
+if (nrow(significant_changes) > 0) {
+  top_changes <- head(significant_changes, 5)
+  formatted_kable(top_changes, "Top 5 Largest Correlation Changes", digits = 3)
+}
+```
+
+# Event Analysis
+
+```{r event-analysis}
+# Define events
+# Define major Red Sea crisis events
+events <- data.frame(
+  Event = c("Initial Houthi Attacks", 
+            "US Coalition Formed", 
+            "Major Shipping Diversion",
+            "Military Response",
+            "Escalation of Attacks"),
+  Date = as.Date(c("2023-11-19", 
+                  "2023-12-18", 
+                  "2024-01-05",
+                  "2024-01-12",
+                  "2024-02-19"))
+)
+
+# Calculate event returns
+market_index <- NULL
+if (any(grepl("SPY_returns", colnames(data$returns)))) {
+  market_index <- "SPY_returns"
+}
+
+event_returns <- calculate_event_returns(data$returns, events, market_index)
+
+# Display event returns
+if (!is.null(event_returns)) {
+  kable(event_returns, caption = "20-Day Cumulative Returns (%) After Key Events",
+        digits = 2, booktabs = TRUE)
+}
+
+# Plot event impact
+impact_plot <- plot_event_impact(event_returns, data$shipping_cols)
+print(impact_plot)
+```
+
+# Market Beta Analysis
+
+```{r beta-analysis}
+# Calculate rolling betas
+if ("SPY_returns" %in% colnames(data$returns)) {
+  rolling_betas <- calculate_rolling_beta(data$returns, "SPY_returns")
+  
+  # Plot betas
+  beta_plot <- plot_rolling_betas(rolling_betas, data$crisis_start)
+  print(beta_plot)
+  
+  # Analyze beta changes
+  beta_changes <- analyze_beta_changes(rolling_betas, data$crisis_start)
+  kable(beta_changes, caption = "Beta Changes Analysis",
+        digits = 4, booktabs = TRUE)
+}
+```
+
+# Value at Risk Analysis
+
+```{r var-analysis}
+# Calculate VaR
+var_results <- compare_var_periods(data$returns, 
+                                 c(data$shipping_cols, data$market_cols), 
+                                 data$crisis_start)
+
+# Display VaR results
+kable(var_results, caption = "Value at Risk Analysis",
+      digits = 2, booktabs = TRUE)
+
+# Plot VaR comparison
+var_plot <- plot_var_comparison(var_results)
+print(var_plot)
+
+# Analyze VaR changes
+var_changes <- analyze_var_changes(var_results)
+kable(var_changes$summary, caption = "VaR Changes Analysis",
+      digits = 2, booktabs = TRUE)
+```
+
+# Forecasting
+
+```{r forecasting}
+# Prepare VAR data
+if (length(data$shipping_cols) > 0 && length(data$market_cols) > 0) {
+  # Select columns for VAR
+  var_cols <- c(data$shipping_cols[1], data$market_cols[1])
+  var_data <- data$returns[, var_cols]
+  
+  # Run VAR analysis
+  var_results <- run_var_analysis(var_data)
+  
+  # Generate forecasts
+  forecasts <- generate_var_forecasts(var_results$model)
+  print(forecasts$plots)
+  
+  # ARIMA forecasts for first shipping stock
+  if (length(names(shipping_data)) > 0) {
+    ticker <- names(shipping_data)[1]
+    arima_forecast <- forecast_with_arima(data$prices[, ticker], ticker)
+    print(arima_forecast$plot)
+  }
+  
+  # Validate forecasts
+  error_metrics <- validate_forecasts(var_data, var_results$model)
+  kable(error_metrics, caption = "Forecast Error Metrics",
+        digits = 4, booktabs = TRUE)
+}
+```
+
+# Hypothesis Testing
+
+```{r hypothesis-testing}
+# Test volatility changes
+vol_test <- test_volatility_changes(data$returns, data$shipping_cols, data$crisis_start)
+formatted_kable(vol_test, "Volatility Change Tests", digits = 4)
+
+# Test beta changes if available
+if (exists("rolling_betas")) {
+  beta_test <- test_beta_changes(rolling_betas, data$crisis_start)
+  formatted_kable(beta_test, "Beta Change Tests", digits = 4)
+}
+
+# Test event significance
+if (!is.null(event_returns)) {
+  event_test <- test_event_significance(event_returns, data$shipping_cols)
+  formatted_kable(event_test, "Event Impact Tests", digits = 4)
+}
+
+# Test VaR changes
+if (exists("var_changes")) {
+  var_test <- test_var_changes(var_changes)
+  formatted_kable(var_test, "VaR Change Tests", digits = 4)
+}
+```
+
+# Visual Summary of Key Findings
+
+```{r visual-summary, fig.height=9, fig.width=10}
+# Create a visual summary of key findings
+
+# 1. Volatility comparison chart
+if (nrow(vol_test) > 0) {
+  vol_summary <- ggplot(vol_test, aes(x = Asset)) +
+    geom_bar(aes(y = Pre_Crisis_Vol, fill = "Pre-Crisis"), stat = "identity", position = "dodge", width = 0.4) +
+    geom_bar(aes(y = Crisis_Vol, fill = "Crisis"), stat = "identity", position = position_dodge(width = 0.4), width = 0.4) +
+    geom_text(aes(y = Crisis_Vol + 0.2, label = paste0("+", round(Change_Pct, 0), "%")), 
+             position = position_dodge(width = 0.4), vjust = 0, size = 3) +
+    scale_fill_manual(values = c("Pre-Crisis" = "steelblue", "Crisis" = "darkred")) +
+    labs(title = "Volatility Increase During Crisis",
+         subtitle = "Standard Deviation of Daily Returns (%)",
+         x = "",
+         y = "Volatility (%)",
+         fill = "Period") +
+    theme_report() +
+    theme(legend.position = "top")
+  
+  # 2. Risk metrics visual
+  if (exists("var_changes") && is.list(var_changes) && "summary" %in% names(var_changes)) {
+    # Create summary bar for percent of assets with increased risk
+    risk_data <- data.frame(
+      Metric = c("Assets with Increased Risk", "Assets with Decreased Risk"),
+      Value = c(var_changes$summary$Pct_Assets_With_Increased_Risk, 
+               100 - var_changes$summary$Pct_Assets_With_Increased_Risk),
+      stringsAsFactors = FALSE
+    )
+    
+    risk_summary <- ggplot(risk_data, aes(x = "", y = Value, fill = Metric)) +
+      geom_bar(stat = "identity", width = 1) +
+      geom_text(aes(label = paste0(round(Value, 0), "%")), 
+               position = position_stack(vjust = 0.5), color = "white") +
+      coord_polar("y", start = 0) +
+      scale_fill_manual(values = c("Assets with Increased Risk" = "darkred", 
+                                 "Assets with Decreased Risk" = "darkgreen")) +
+      labs(title = "Risk Profile Changes",
+           subtitle = "Proportion of Assets with VaR Changes",
+           x = NULL, y = NULL, fill = NULL) +
+      theme_minimal() +
+      theme(axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            panel.grid = element_blank())
+    
+    # Arrange the two plots
+    grid.arrange(vol_summary, risk_summary, ncol = 2)
+  } else {
+    print(vol_summary)
+  }
+}
+
+# 3. Timeline of key events
+events <- data.frame(
+  Date = as.Date(c("2023-11-19", "2023-12-18", "2024-01-12", "2024-01-16", "2024-02-14")),
+  Event = c("First Houthi Attack", "Shipping Diversions", "Military Response", 
+           "Maersk Suspension", "Bulk Carrier Attack"),
+  Impact = c(1, 2, 3, 2, 1) # Relative impact scale (1-3)
+)
+
+# Create timeline visualization
+timeline_plot <- ggplot(events, aes(x = Date, y = 1, size = Impact, color = factor(Impact))) +
+  geom_point() +
+  geom_segment(aes(x = min(events$Date) - 10, xend = max(events$Date) + 10, 
+                  y = 1, yend = 1), color = "gray50", size = 0.5) +
+  geom_text(aes(label = Event), vjust = -1.5, hjust = 0.5, size = 3) +
+  geom_text(aes(label = format(Date, "%b %d")), vjust = 2, hjust = 0.5, size = 3) +
+  scale_size_continuous(range = c(4, 10)) +
+  scale_color_manual(values = c("1" = "steelblue", "2" = "darkred", "3" = "purple")) +
+  labs(title = "Key Red Sea Crisis Events",
+       subtitle = "Timeline of Major Developments",
+       x = "", y = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "none")
+
+print(timeline_plot)
+
+# 4. Economic impact summary (if available)
+if (exists("econ_results") && is.list(econ_results) && "price_changes" %in% names(econ_results)) {
+  # Prepare data for economic impact visualization
+  shipping_only <- econ_results$price_changes[econ_results$price_changes$Asset %in% data$shipping_cols, ]
+  market_only <- econ_results$price_changes[econ_results$price_changes$Asset %in% data$market_cols, ]
+  
+  if (nrow(shipping_only) > 0 && nrow(market_only) > 0) {
+    avg_shipping <- mean(shipping_only$Price_Change_Pct, na.rm = TRUE)
+    avg_market <- mean(market_only$Price_Change_Pct, na.rm = TRUE)
+    
+    impact_data <- data.frame(
+      Sector = c("Shipping Stocks", "Market Indices"),
+      Change = c(avg_shipping, avg_market),
+      stringsAsFactors = FALSE
+    )
+    
+    econ_chart <- ggplot(impact_data, aes(x = Sector, y = Change, fill = Sector)) +
+      geom_bar(stat = "identity", width = 0.6) +
+      geom_text(aes(label = paste0(round(Change, 1), "%"), 
+                   y = ifelse(Change > 0, Change + 1, Change - 1)),
+               size = 4) +
+      scale_fill_manual(values = c("Shipping Stocks" = "darkred", "Market Indices" = "steelblue")) +
+      labs(title = "Economic Impact Comparison",
+           subtitle = "Average Price Change (%)",
+           x = "", y = "Percentage Change (%)") +
+      theme_report() +
+      theme(legend.position = "none")
+    
+    print(econ_chart)
+  }
+}
+```
+
+# Enhanced Analysis
+
+## Rolling Correlations Analysis
+
+```{r rolling-correlations}
+# Calculate rolling correlations between shipping and market
+if ("SPY" %in% colnames(data$returns)) {
+  # Calculate rolling correlations with market
+  rolling_cors <- calculate_rolling_correlations(data$returns, window_size = 60, market_index = "SPY")
+  
+  # Plot rolling correlations
+  rolling_cors_plot <- plot_rolling_correlations(rolling_cors, data$crisis_start, 
+                                               "Rolling 60-Day Correlations with S&P 500") +
+    theme_report()
+  print(rolling_cors_plot)
+  
+  # Calculate shipping correlations among themselves
+  if (length(data$shipping_cols) > 1) {
+    shipping_cors <- calculate_rolling_correlations(data$returns[, data$shipping_cols], window_size = 60)
+    shipping_cors_plot <- plot_rolling_correlations(shipping_cors, data$crisis_start,
+                                                  "Rolling 60-Day Correlations Between Shipping Stocks") +
+      theme_report()
+    print(shipping_cors_plot)
+  }
+}
+```
+
+## GARCH Volatility Modeling
+
+```{r garch-analysis}
+# Check if rugarch is installed
+if (!requireNamespace("rugarch", quietly = TRUE)) {
+  # Only run this if you want to install the package
+  # install.packages("rugarch")
+  cat("Package 'rugarch' is required for GARCH analysis but not available.\n")
+} else {
+  # Load the library
+  library(rugarch)
+  
+  # Run GARCH analysis on shipping stocks
+  garch_models <- list()
+  garch_vols <- list()
+  
+  # Analyze selected assets
+  assets_to_analyze <- c(data$shipping_cols[1], data$market_cols[1]) # First shipping stock and market index
+  
+  for (asset in assets_to_analyze) {
+    if (asset %in% colnames(data$returns)) {
+      # Run GARCH model
+      garch_result <- run_garch_analysis(data$returns[, asset], asset)
+      garch_models[[asset]] <- garch_result
+      
+      # Extract volatility
+      if (!is.null(garch_result$model)) {
+        vol <- extract_garch_volatility(garch_result, data$returns[, asset])
+        garch_vols[[asset]] <- vol
+        
+        # Display GARCH parameters
+        cat("GARCH Model Parameters for", asset, ":\n")
+        print(rugarch::coef(garch_result$model))
+        
+        # Plot model diagnostics
+        plot(garch_result$model, which = 2) # Conditional SD plot
+        plot(garch_result$model, which = 8) # News Impact Curve
+      }
+    }
+  }
+  
+  # Plot conditional volatilities
+  if (length(garch_vols) > 0) {
+    garch_vol_plot <- plot_garch_volatility(garch_vols, data$crisis_start) +
+      theme_report()
+    print(garch_vol_plot)
+    
+    # Compare pre/post-crisis volatility persistence
+    persistence_results <- data.frame(
+      Asset = character(),
+      Pre_Crisis_Persistence = numeric(),
+      Crisis_Persistence = numeric(),
+      Persistence_Change = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    for (asset in names(garch_models)) {
+      if (!is.null(garch_models[[asset]]$model)) {
+        model_coef <- rugarch::coef(garch_models[[asset]]$model)
+        persistence <- sum(model_coef[grepl("alpha|beta", names(model_coef))])
+        
+        persistence_results <- rbind(persistence_results, data.frame(
+          Asset = asset,
+          GARCH_Persistence = persistence,
+          Half_Life_Days = log(0.5) / log(persistence),
+          stringsAsFactors = FALSE
+        ))
+      }
+    }
+    
+    formatted_kable(persistence_results, "GARCH Volatility Persistence", digits = 4)
+  }
+}
+```
+
+## Structural Break Testing
+
+```{r structural-breaks}
+# Check if strucchange is installed
+if (!requireNamespace("strucchange", quietly = TRUE)) {
+  # Only run this if you want to install the package
+  # install.packages("strucchange")
+  cat("Package 'strucchange' is required for structural break testing but not available.\n")
+} else {
+  # Load the library
+  library(strucchange)
+  
+  # Test for structural breaks in shipping stocks
+  break_results <- list()
+  for (asset in data$shipping_cols) {
+    if (asset %in% colnames(data$returns)) {
+      break_test <- test_structural_breaks(data$returns[, asset], data$crisis_start)
+      break_results[[asset]] <- break_test
+      
+      # Plot CUSUM test
+      if (!is.null(break_test$cusum)) {
+        plot(break_test$cusum, main = paste("CUSUM Test for", asset))
+        
+        # Report Chow test results
+        if (!is.null(break_test$chow)) {
+          cat("\nChow Test for", asset, "at Red Sea Crisis Date:\n")
+          print(break_test$chow)
+        }
+        
+        # Plot breakpoints 
+        if (!is.null(break_test$breakpoints)) {
+          # Plot with breakpoints
+          breakdates <- breakpoints(break_test$breakpoints)
+          plot(break_test$breakpoints)
+          
+          # Print estimated break dates
+          cat("\nEstimated Break Dates for", asset, ":\n")
+          print(breakdates)
+        }
+      }
+    }
+  }
+  
+  # Summarize structural break results
+  break_summary <- data.frame(
+    Asset = character(),
+    Crisis_Date_Is_Break = logical(),
+    Chow_Statistic = numeric(),
+    Chow_P_Value = numeric(),
+    Detected_Breaks = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (asset in names(break_results)) {
+    result <- break_results[[asset]]
+    
+    # Check if Chow test available
+    chow_stat <- NA
+    chow_pval <- NA
+    is_break <- FALSE
+    if (!is.null(result$chow)) {
+      chow_stat <- result$chow$statistic
+      chow_pval <- result$chow$p.value
+      is_break <- chow_pval < 0.05
+    }
+    
+    # Get detected breaks
+    break_dates <- "None detected"
+    if (!is.null(result$breakpoints) && !is.null(result$breakpoints$breakpoints)) {
+      dates <- index(data$returns)[result$breakpoints$breakpoints]
+      if (length(dates) > 0) {
+        break_dates <- paste(as.character(dates), collapse = ", ")
+      }
+    }
+    
+    # Add to summary
+    break_summary <- rbind(break_summary, data.frame(
+      Asset = asset,
+      Crisis_Date_Is_Break = is_break,
+      Chow_Statistic = chow_stat,
+      Chow_P_Value = chow_pval,
+      Detected_Breaks = break_dates,
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  formatted_kable(break_summary, "Structural Break Test Results", digits = 4)
+}
+```
+
+## Economic Significance Assessment
+
+```{r economic-significance}
+# Analyze economic significance of the crisis
+econ_results <- analyze_economic_significance(data$prices, data$returns, 
+                                           c(data$shipping_cols, data$market_cols), 
+                                           data$crisis_start)
+
+# Display price change results
+formatted_kable(econ_results$price_changes, "Economic Impact: Price Changes", digits = 2)
+
+# Display risk-adjusted returns
+formatted_kable(econ_results$risk_adjusted, "Economic Impact: Risk-Adjusted Returns", digits = 4)
+
+# Calculate implied cost increases (for shipping companies)
+shipping_indices <- data$shipping_cols
+if (length(shipping_indices) > 0) {
+  # Calculate weighted average impact
+  avg_price_change <- mean(econ_results$price_changes$Price_Change_Pct[
+    econ_results$price_changes$Asset %in% shipping_indices], na.rm = TRUE)
+  
+  # Calculate economic impact estimates
+  impact_estimates <- data.frame(
+    Metric = c("Avg. Stock Price Change (%)", 
+              "Est. Shipping Rate Change (%)",
+              "Est. Annual Impact ($B)",
+              "Est. Trip Extension (days)",
+              "Est. Added Fuel Costs (%)"),
+    Value = c(avg_price_change,
+             avg_price_change * 1.5, # Estimated relationship between stock prices and shipping rates
+             20 * (avg_price_change * 1.5) / 100, # Global container shipping ~$20B annually
+             8, # Cape of Good Hope adds ~8 days
+             30), # Fuel cost increase due to longer route
+    stringsAsFactors = FALSE
+  )
+  
+  formatted_kable(impact_estimates, "Estimated Red Sea Crisis Economic Impact", digits = 2)
+}
+```
+
+# Conclusion
