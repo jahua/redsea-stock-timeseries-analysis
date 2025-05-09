@@ -10,7 +10,7 @@ output:
 header-includes:
 - \usepackage{graphicx}
 - \usepackage{titling}
-- \usepackage{geometry}
+- \usepackage[a4paper,margin=1in]{geometry}
 - \usepackage{booktabs}
 ---
 
@@ -3173,18 +3173,47 @@ if (requireNamespace("rugarch", quietly = TRUE)) {
           # Extract model parameters
           model_coef <- coef(garch_result$model)
           
-          # Get model properties
-          if (grepl("gjr", garch_result$spec@model$modeldesc$vmodel)) {
-            model_type <- "GJR-GARCH"
-          } else if (garch_result$spec@model$modelinc[["garchOrder"]][2] == 0) {
-            model_type <- "ARCH"
-          } else {
+          # Get model properties - safely extract model type
+          tryCatch({
+            # Try to get information from the specification
+            model_spec <- garch_result$spec
+            
+            # Determine model type based on the specification
+            if (inherits(model_spec, "uGARCHspec")) {
+              if (model_spec@model$varmodel == "gjrGARCH") {
+                model_type <- "GJR-GARCH"
+                garch_order <- model_spec@model$garchOrder
+              } else if (model_spec@model$varmodel == "sGARCH") {
+                # Check if it's ARCH (no GARCH term)
+                garch_order <- model_spec@model$garchOrder
+                if (garch_order[2] == 0) {
+                  model_type <- "ARCH"
+                } else {
+                  model_type <- "GARCH"
+                }
+              } else {
+                model_type <- model_spec@model$varmodel
+                garch_order <- model_spec@model$garchOrder
+              }
+              # Get ARMA order and distribution model
+              arma_order <- model_spec@model$armaOrder
+              dist_model <- model_spec@model$distribution
+            } else {
+              # Fallback - extract from model name
+              model_info <- garch_result$model@model
+              model_type <- model_info$modeldesc$vmodel
+              garch_order <- c(1, 1)  # Default fallback
+              arma_order <- c(0, 0)   # Default fallback
+              dist_model <- "norm"    # Default fallback
+            }
+          }, error = function(e) {
+            # If any error occurs, use a safe fallback
+            cat("Error extracting model info:", e$message, "\n")
             model_type <- "GARCH"
-          }
-          
-          garch_order <- garch_result$spec@model$modelinc[["garchOrder"]]
-          arma_order <- garch_result$spec@model$modelinc[["armaOrder"]]
-          dist_model <- garch_result$spec@model$modeldesc$distribution
+            garch_order <- c(1, 1)  # Default fallback
+            arma_order <- c(0, 0)   # Default fallback
+            dist_model <- "norm"    # Default fallback
+          })
           
           # Calculate persistence
           alpha_indices <- grep("alpha", names(model_coef))
@@ -3207,11 +3236,11 @@ if (requireNamespace("rugarch", quietly = TRUE)) {
               Model = paste0(model_type, "(", garch_order[1], ",", garch_order[2], ")"),
               Method = "GARCH",
               Mean_Equation = paste0("ARMA(", arma_order[1], ",", arma_order[2], ")"),
-              Omega = model_coef["omega"],
+              Omega = if("omega" %in% names(model_coef)) model_coef["omega"] else NA,
               Alpha = sum(model_coef[alpha_indices]),
               Beta = sum(model_coef[beta_indices]),
               Persistence = persistence,
-              AIC = garch_result$model@fit$ics["Akaike"],
+              AIC = if(!is.null(garch_result$model@fit$ics)) garch_result$model@fit$ics["Akaike"] else NA,
               Convergence = "Converged",
               Pre_Crisis_Vol = pre_mean,
               Crisis_Vol = crisis_mean,
