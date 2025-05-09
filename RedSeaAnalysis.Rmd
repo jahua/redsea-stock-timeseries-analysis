@@ -1726,33 +1726,54 @@ for (col in data$shipping_cols) {
     # Extract returns for this asset
     asset_returns <- data$returns[, col]
     
-    # Create monthly statistics
-    by_month <- aggregate(asset_returns, 
-                         format(index(asset_returns), "%Y-%m"), 
-                         FUN = function(x) {
-                           c(Mean = mean(x, na.rm = TRUE) * 100,
-                             SD = sd(x, na.rm = TRUE) * 100,
-                             Min = min(x, na.rm = TRUE) * 100,
-                             Max = max(x, na.rm = TRUE) * 100)
-                         })
+    # Skip if no data
+    if (length(asset_returns) == 0 || all(is.na(asset_returns))) {
+      warning(paste("No valid data for asset", col))
+      next
+    }
     
-    # Convert to data frame
-    month_df <- data.frame(
-      Asset = col,
-      Month = rownames(by_month),
-      Mean = by_month$x[, "Mean"],
-      Volatility = by_month$x[, "SD"],
-      Min = by_month$x[, "Min"],
-      Max = by_month$x[, "Max"],
-      stringsAsFactors = FALSE
-    )
-    
-    # Flag crisis period
-    month_df$Period <- ifelse(as.Date(paste0(month_df$Month, "-01")) >= as.Date(data$crisis_start),
-                             "Crisis", "Pre-Crisis")
-    
-    # Add to results
-    monthly_stats <- rbind(monthly_stats, month_df)
+    # Create monthly statistics with error handling
+    tryCatch({
+      # Group by month
+      months <- format(index(asset_returns), "%Y-%m")
+      
+      # Pre-allocate results data frame
+      unique_months <- unique(months)
+      month_df <- data.frame(
+        Asset = rep(col, length(unique_months)),
+        Month = unique_months,
+        Mean = NA_real_,
+        Volatility = NA_real_,
+        Min = NA_real_,
+        Max = NA_real_,
+        stringsAsFactors = FALSE
+      )
+      
+      # Calculate statistics for each month
+      for (i in 1:length(unique_months)) {
+        month_data <- asset_returns[months == unique_months[i]]
+        if (length(month_data) >= 5) {  # Require at least 5 observations
+          month_df$Mean[i] <- mean(month_data, na.rm = TRUE) * 100
+          month_df$Volatility[i] <- sd(month_data, na.rm = TRUE) * 100
+          month_df$Min[i] <- min(month_data, na.rm = TRUE) * 100
+          month_df$Max[i] <- max(month_data, na.rm = TRUE) * 100
+        }
+      }
+      
+      # Remove rows with missing values
+      month_df <- month_df[!is.na(month_df$Mean), ]
+      
+      # Flag crisis period
+      if (nrow(month_df) > 0) {
+        month_df$Period <- ifelse(as.Date(paste0(month_df$Month, "-01")) >= as.Date(data$crisis_start),
+                                "Crisis", "Pre-Crisis")
+        
+        # Add to results
+        monthly_stats <- rbind(monthly_stats, month_df)
+      }
+    }, error = function(e) {
+      warning(paste("Error calculating monthly statistics for", col, ":", e$message))
+    })
   }
 }
 
